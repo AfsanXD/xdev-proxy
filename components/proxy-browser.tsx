@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ArrowLeft, ArrowRight, RefreshCwIcon as Reload, Home, Globe } from "lucide-react"
@@ -33,9 +33,6 @@ export function ProxyBrowser() {
       setHistory(newHistory)
       setHistoryIndex(newHistory.length - 1)
       setCurrentUrl(processedUrl)
-
-      // For demonstration - this won't actually proxy content in the client component
-      // The actual proxying happens in the server action
       setUrl(processedUrl)
     } catch (error) {
       toast({
@@ -80,6 +77,31 @@ export function ProxyBrowser() {
     e.preventDefault()
     navigate(url)
   }
+
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+
+  useEffect(() => {
+    // Listen for messages from the iframe
+    const handleMessage = (event: MessageEvent) => {
+      // Only accept messages from our iframe
+      if (iframeRef.current && event.source === iframeRef.current.contentWindow) {
+        if (event.data.type === "NAVIGATE") {
+          // Update URL without triggering navigation
+          setUrl(event.data.url)
+          setCurrentUrl(event.data.url)
+
+          // Update history
+          const newHistory = history.slice(0, historyIndex + 1)
+          newHistory.push(event.data.url)
+          setHistory(newHistory)
+          setHistoryIndex(newHistory.length - 1)
+        }
+      }
+    }
+
+    window.addEventListener("message", handleMessage)
+    return () => window.removeEventListener("message", handleMessage)
+  }, [history, historyIndex])
 
   return (
     <div className="flex flex-col h-full w-full">
@@ -126,9 +148,11 @@ export function ProxyBrowser() {
           </div>
         ) : currentUrl ? (
           <iframe
+            ref={iframeRef}
             src={`/api/proxy?url=${encodeURIComponent(currentUrl)}`}
             className="w-full h-full border-0"
-            sandbox="allow-same-origin allow-scripts"
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals allow-orientation-lock allow-pointer-lock allow-presentation allow-top-navigation-by-user-activation"
+            allow="accelerometer; autoplay; camera; encrypted-media; fullscreen; geolocation; gyroscope; microphone; midi; payment; picture-in-picture; sync-xhr; usb"
             title="Browser content"
           />
         ) : (
