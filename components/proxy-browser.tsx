@@ -36,6 +36,22 @@ interface Tab {
   historyIndex: number
 }
 
+// Search engines configuration
+const SEARCH_ENGINES = {
+  google: {
+    name: "Google",
+    url: "https://www.google.com/search?q=",
+  },
+  bing: {
+    name: "Bing",
+    url: "https://www.bing.com/search?q=",
+  },
+  duckduckgo: {
+    name: "DuckDuckGo",
+    url: "https://duckduckgo.com/?q=",
+  },
+}
+
 export function ProxyBrowser() {
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([])
@@ -54,6 +70,8 @@ export function ProxyBrowser() {
   const [isSecure, setIsSecure] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
   const [isSearching, setIsSearching] = useState(false)
+  const [currentSearchEngine, setCurrentSearchEngine] = useState<keyof typeof SEARCH_ENGINES>("google")
+  const [debugMode, setDebugMode] = useState(false)
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const urlInputRef = useRef<HTMLInputElement>(null)
@@ -74,6 +92,12 @@ export function ProxyBrowser() {
       } catch (e) {
         console.error("Failed to parse bookmarks:", e)
       }
+    }
+
+    // Try to load saved search engine preference
+    const savedSearchEngine = localStorage.getItem("proxy-search-engine")
+    if (savedSearchEngine && SEARCH_ENGINES[savedSearchEngine as keyof typeof SEARCH_ENGINES]) {
+      setCurrentSearchEngine(savedSearchEngine as keyof typeof SEARCH_ENGINES)
     }
 
     // Try to load saved tabs
@@ -120,6 +144,11 @@ export function ProxyBrowser() {
     localStorage.setItem("proxy-bookmarks", JSON.stringify(bookmarks))
   }, [bookmarks])
 
+  // Save search engine preference
+  useEffect(() => {
+    localStorage.setItem("proxy-search-engine", currentSearchEngine)
+  }, [currentSearchEngine])
+
   // Update URL input when active tab changes
   useEffect(() => {
     if (activeTab) {
@@ -127,7 +156,11 @@ export function ProxyBrowser() {
       setPageTitle(activeTab.title)
       setLoading(activeTab.loading)
       setIsSecure(activeTab.url.startsWith("https://"))
-      setIsSearching(activeTab.url.includes("google.com/search") || activeTab.url.includes("bing.com/search"))
+      setIsSearching(
+        activeTab.url.includes("google.com/search") ||
+          activeTab.url.includes("bing.com/search") ||
+          activeTab.url.includes("duckduckgo.com"),
+      )
     } else {
       setUrl("")
       setPageTitle("")
@@ -252,6 +285,10 @@ export function ProxyBrowser() {
           // Just refresh the iframe
           updateTab(activeTabId, { iframeKey: Date.now() })
         }
+
+        if (debugMode) {
+          console.log(`Navigating to: ${processedUrl}`)
+        }
       } catch (error) {
         toast({
           title: "Navigation Error",
@@ -265,7 +302,7 @@ export function ProxyBrowser() {
         console.error(error)
       }
     },
-    [activeTabId, activeTab, updateTab],
+    [activeTabId, activeTab, updateTab, debugMode],
   )
 
   // Go back in the active tab's history
@@ -341,13 +378,13 @@ export function ProxyBrowser() {
 
       // If it has spaces or doesn't have dots, treat as search query
       if (input.includes(" ") || !input.includes(".")) {
-        const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(input)}`
+        const searchUrl = `${SEARCH_ENGINES[currentSearchEngine].url}${encodeURIComponent(input)}`
         navigate(searchUrl)
       } else {
         navigate(input)
       }
     },
-    [url, navigate],
+    [url, navigate, currentSearchEngine],
   )
 
   // Open a popup
@@ -452,15 +489,37 @@ export function ProxyBrowser() {
     })
   }, [activeTabId, updateTab])
 
+  // Toggle debug mode
+  const toggleDebugMode = useCallback(() => {
+    setDebugMode(!debugMode)
+    toast({
+      title: debugMode ? "Debug mode disabled" : "Debug mode enabled",
+      description: debugMode ? "Debug logs will no longer be shown" : "Debug logs will be shown in the console",
+    })
+  }, [debugMode])
+
+  // Cycle through search engines
+  const cycleSearchEngine = useCallback(() => {
+    const engines = Object.keys(SEARCH_ENGINES) as Array<keyof typeof SEARCH_ENGINES>
+    const currentIndex = engines.indexOf(currentSearchEngine)
+    const nextIndex = (currentIndex + 1) % engines.length
+    setCurrentSearchEngine(engines[nextIndex])
+
+    toast({
+      title: "Search Engine Changed",
+      description: `Now using ${SEARCH_ENGINES[engines[nextIndex]].name}`,
+    })
+  }, [currentSearchEngine])
+
   // Perform a search
   const performSearch = useCallback(() => {
     if (!searchQuery.trim()) return
 
-    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`
+    const searchUrl = `${SEARCH_ENGINES[currentSearchEngine].url}${encodeURIComponent(searchQuery)}`
     navigate(searchUrl)
     setSearchQuery("")
     setIsSearching(false)
-  }, [searchQuery, navigate])
+  }, [searchQuery, navigate, currentSearchEngine])
 
   // Scroll tabs into view when they overflow
   const scrollTabIntoView = useCallback((tabId: string) => {
@@ -494,6 +553,10 @@ export function ProxyBrowser() {
     const handleMessage = (event: MessageEvent) => {
       // Check if the message is from our proxy
       if (event.data && event.data.type === "PROXY_EVENT") {
+        if (debugMode) {
+          console.log("Received message from iframe:", event.data)
+        }
+
         switch (event.data.action) {
           case "NAVIGATE":
             if (activeTabId) {
@@ -555,13 +618,19 @@ export function ProxyBrowser() {
               updateTab(activeTabId, { favicon: event.data.favicon })
             }
             break
+
+          case "DEBUG":
+            if (debugMode) {
+              console.log("Debug from iframe:", event.data.message)
+            }
+            break
         }
       }
     }
 
     window.addEventListener("message", handleMessage)
     return () => window.removeEventListener("message", handleMessage)
-  }, [activeTabId, activeTab, navigate, openPopup, updateTab])
+  }, [activeTabId, activeTab, navigate, openPopup, updateTab, debugMode])
 
   // Handle keyboard shortcuts
   useEffect(() => {
@@ -663,6 +732,18 @@ export function ProxyBrowser() {
           activateTab(tabs[tabIndex].id)
         }
       }
+
+      // Alt+S to cycle search engines
+      if (e.altKey && e.key === "s") {
+        e.preventDefault()
+        cycleSearchEngine()
+      }
+
+      // Alt+D to toggle debug mode
+      if (e.altKey && e.key === "d") {
+        e.preventDefault()
+        toggleDebugMode()
+      }
     }
 
     window.addEventListener("keydown", handleKeyDown)
@@ -679,6 +760,8 @@ export function ProxyBrowser() {
     activeTabId,
     tabs,
     activateTab,
+    cycleSearchEngine,
+    toggleDebugMode,
   ])
 
   return (
@@ -835,6 +918,23 @@ export function ProxyBrowser() {
               <Button
                 variant="ghost"
                 size="icon"
+                onClick={cycleSearchEngine}
+                className="text-gray-300 hover:text-white hover:bg-gray-800"
+              >
+                <Search className="h-4 w-4" />
+                <span className="ml-1 text-xs">{currentSearchEngine.charAt(0).toUpperCase()}</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Change Search Engine (Alt+S): {SEARCH_ENGINES[currentSearchEngine].name}</p>
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
                 onClick={() => {
                   setShowBookmarks(!showBookmarks)
                   setShowHistory(false)
@@ -919,6 +1019,22 @@ export function ProxyBrowser() {
               </TooltipContent>
             </Tooltip>
           )}
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={debugMode ? "default" : "ghost"}
+                size="icon"
+                onClick={toggleDebugMode}
+                className={`text-gray-300 hover:text-white hover:bg-gray-800 ${debugMode ? "bg-gray-700" : ""}`}
+              >
+                <span className="text-xs font-mono">DBG</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Toggle Debug Mode (Alt+D)</p>
+            </TooltipContent>
+          </Tooltip>
         </TooltipProvider>
       </div>
 
@@ -930,7 +1046,7 @@ export function ProxyBrowser() {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search the web"
+            placeholder={`Search with ${SEARCH_ENGINES[currentSearchEngine].name}`}
             className="flex-1 border-0 focus-visible:ring-0 focus-visible:ring-offset-0 bg-gray-800 text-white h-8"
             autoFocus
             onKeyDown={(e) => {
@@ -1119,7 +1235,7 @@ export function ProxyBrowser() {
               <iframe
                 key={activeTab.iframeKey}
                 ref={iframeRef}
-                src={`/api/advanced-proxy?url=${encodeURIComponent(activeTab.url)}`}
+                src={`/api/simple-proxy?url=${encodeURIComponent(activeTab.url)}`}
                 className="w-full h-full border-0 bg-white"
                 sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-modals allow-popups allow-presentation"
                 allow="accelerometer; autoplay; camera; encrypted-media; fullscreen; geolocation; gyroscope; microphone; midi; payment; picture-in-picture"
@@ -1143,13 +1259,20 @@ export function ProxyBrowser() {
                       console.error("Failed to send get title command to iframe:", e)
                     }
                   }
+
+                  if (debugMode) {
+                    console.log(`Page loaded: ${activeTab.url}`)
+                  }
                 }}
-                onError={() => {
+                onError={(e) => {
                   if (activeTabId) {
                     updateTab(activeTabId, {
                       loading: false,
                       error: "Failed to load the page",
                     })
+                  }
+                  if (debugMode) {
+                    console.error("Iframe error:", e)
                   }
                 }}
               />
@@ -1185,6 +1308,40 @@ export function ProxyBrowser() {
                     </div>
                   </div>
                 )}
+
+                <div className="mt-8 p-4 bg-gray-800 rounded-lg max-w-md">
+                  <h3 className="text-lg font-medium mb-2 text-gray-300">Search the Web</h3>
+                  <div className="flex">
+                    <Input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder={`Search with ${SEARCH_ENGINES[currentSearchEngine].name}`}
+                      className="flex-1 bg-gray-700 border-gray-600 text-white"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          performSearch()
+                        }
+                      }}
+                    />
+                    <Button onClick={performSearch} className="ml-2">
+                      Search
+                    </Button>
+                  </div>
+                  <div className="flex justify-center mt-2">
+                    {Object.entries(SEARCH_ENGINES).map(([key, engine]) => (
+                      <Button
+                        key={key}
+                        variant={currentSearchEngine === key ? "default" : "ghost"}
+                        size="sm"
+                        className="mx-1"
+                        onClick={() => setCurrentSearchEngine(key as keyof typeof SEARCH_ENGINES)}
+                      >
+                        {engine.name}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -1194,7 +1351,7 @@ export function ProxyBrowser() {
         {popups.map((popup) => (
           <div key={popup.id} className={`w-full h-full ${activePopupId === popup.id ? "block" : "hidden"}`}>
             <iframe
-              src={`/api/proxy?url=${encodeURIComponent(popup.url)}`}
+              src={`/api/simple-proxy?url=${encodeURIComponent(popup.url)}`}
               className="w-full h-full border-0 bg-white"
               sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-modals allow-popups allow-presentation"
               allow="accelerometer; autoplay; camera; encrypted-media; fullscreen; geolocation; gyroscope; microphone; midi; payment; picture-in-picture"
