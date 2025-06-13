@@ -1,6 +1,6 @@
 "use client"
 
-import type React from "react"
+import React from "react"
 import { useState, useEffect, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -36,6 +36,57 @@ interface Tab {
   historyIndex: number
 }
 
+// Add this after the imports
+const MemoizedTabItem = React.memo(function TabItem({
+  tab,
+  isActive,
+  onActivate,
+  onClose,
+}: {
+  tab: Tab
+  isActive: boolean
+  onActivate: () => void
+  onClose: (e: React.MouseEvent) => void
+}) {
+  return (
+    <div
+      id={`tab-${tab.id}`}
+      className={`flex items-center min-w-[140px] max-w-[200px] h-9 px-3 py-1 border-r border-gray-700 ${
+        isActive ? "bg-gray-800" : "bg-gray-900 hover:bg-gray-800"
+      } cursor-pointer group`}
+      onClick={onActivate}
+    >
+      {tab.loading ? (
+        <div className="w-4 h-4 mr-2 rounded-full border-2 border-t-transparent border-blue-500 animate-spin" />
+      ) : tab.favicon ? (
+        <img src={tab.favicon || "/placeholder.svg"} alt="" className="w-4 h-4 mr-2" />
+      ) : (
+        <Globe className="w-4 h-4 mr-2 text-gray-400" />
+      )}
+      <div className="flex-1 truncate text-sm">{tab.title || "New Tab"}</div>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100 ml-1"
+        onClick={onClose}
+      >
+        <X className="h-3 w-3" />
+      </Button>
+    </div>
+  )
+})
+
+const LoadingIndicator = React.memo(function LoadingIndicator() {
+  return (
+    <div className="absolute top-0 left-0 w-full h-1 bg-gray-800 z-50">
+      <div className="h-full bg-blue-500 animate-progress"></div>
+    </div>
+  )
+})
+
+// Production optimization flag
+const isProduction = process.env.NODE_ENV === "production"
+
 export function ProxyBrowser() {
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([])
@@ -54,7 +105,7 @@ export function ProxyBrowser() {
   const [isSecure, setIsSecure] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
   const [isSearching, setIsSearching] = useState(false)
-  const [debugMode, setDebugMode] = useState(false)
+  const [debugMode, setDebugMode] = useState(false && !isProduction)
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const urlInputRef = useRef<HTMLInputElement>(null)
@@ -65,6 +116,34 @@ export function ProxyBrowser() {
 
   // Get the active tab
   const activeTab = tabs.find((tab) => tab.id === activeTabId) || null
+
+  // Define createNewTab before it's used in useEffect
+  const createNewTab = useCallback((tabUrl = "") => {
+    const newTabId = generateId()
+    const newTab: Tab = {
+      id: newTabId,
+      url: tabUrl,
+      title: tabUrl ? new URL(tabUrl).hostname : "New Tab",
+      favicon: "",
+      loading: !!tabUrl,
+      error: null,
+      iframeKey: Date.now(),
+      history: tabUrl ? [{ url: tabUrl, title: new URL(tabUrl).hostname, timestamp: Date.now() }] : [],
+      historyIndex: tabUrl ? 0 : -1,
+    }
+
+    setTabs((prevTabs) => [...prevTabs, newTab])
+    setActiveTabId(newTabId)
+
+    // Focus URL input if it's a blank tab
+    if (!tabUrl) {
+      setTimeout(() => {
+        urlInputRef.current?.focus()
+      }, 100)
+    }
+
+    return newTabId
+  }, [])
 
   // Load saved state from localStorage on component mount
   useEffect(() => {
@@ -104,7 +183,14 @@ export function ProxyBrowser() {
       // Create an initial tab if none exist
       createNewTab()
     }
-  }, [])
+  }, [createNewTab])
+
+  // Ensure we always have at least one tab
+  useEffect(() => {
+    if (tabs.length === 0) {
+      createNewTab()
+    }
+  }, [tabs.length, createNewTab])
 
   // Save tabs to localStorage when they change
   useEffect(() => {
@@ -141,34 +227,6 @@ export function ProxyBrowser() {
       setIsSearching(false)
     }
   }, [activeTab])
-
-  // Create a new tab
-  const createNewTab = useCallback((tabUrl = "") => {
-    const newTabId = generateId()
-    const newTab: Tab = {
-      id: newTabId,
-      url: tabUrl,
-      title: tabUrl ? new URL(tabUrl).hostname : "New Tab",
-      favicon: "",
-      loading: !!tabUrl,
-      error: null,
-      iframeKey: Date.now(),
-      history: tabUrl ? [{ url: tabUrl, title: new URL(tabUrl).hostname, timestamp: Date.now() }] : [],
-      historyIndex: tabUrl ? 0 : -1,
-    }
-
-    setTabs((prevTabs) => [...prevTabs, newTab])
-    setActiveTabId(newTabId)
-
-    // Focus URL input if it's a blank tab
-    if (!tabUrl) {
-      setTimeout(() => {
-        urlInputRef.current?.focus()
-      }, 100)
-    }
-
-    return newTabId
-  }, [])
 
   // Close a tab
   const closeTab = useCallback(
@@ -209,9 +267,6 @@ export function ProxyBrowser() {
     (targetUrl: string, addToHistory = true) => {
       if (!targetUrl || !activeTabId) return
 
-      // Reset error state
-      updateTab(activeTabId, { error: null })
-
       // Make sure URL has a protocol
       let processedUrl = targetUrl
       if (!processedUrl.startsWith("http://") && !processedUrl.startsWith("https://")) {
@@ -219,6 +274,9 @@ export function ProxyBrowser() {
       }
 
       try {
+        // Validate URL format
+        new URL(processedUrl)
+
         // Update loading state
         updateTab(activeTabId, { loading: true })
 
@@ -258,9 +316,7 @@ export function ProxyBrowser() {
           updateTab(activeTabId, { iframeKey: Date.now() })
         }
 
-        if (debugMode) {
-          console.log(`Navigating to: ${processedUrl}`)
-        }
+        debugMode && console.log(`Navigating to: ${processedUrl}`)
       } catch (error) {
         toast({
           title: "Navigation Error",
@@ -507,14 +563,11 @@ export function ProxyBrowser() {
     [scrollTabIntoView],
   )
 
-  // Listen for messages from the iframe
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
+  const handleMessage = useCallback(
+    (event: MessageEvent) => {
       // Check if the message is from our proxy
       if (event.data && event.data.type === "PROXY_EVENT") {
-        if (debugMode) {
-          console.log("Received message from iframe:", event.data)
-        }
+        debugMode && console.log("Received message from iframe:", event.data)
 
         switch (event.data.action) {
           case "NAVIGATE":
@@ -579,17 +632,19 @@ export function ProxyBrowser() {
             break
 
           case "DEBUG":
-            if (debugMode) {
-              console.log("Debug from iframe:", event.data.message)
-            }
+            debugMode && console.log("Debug from iframe:", event.data.message)
             break
         }
       }
-    }
+    },
+    [activeTabId, activeTab, navigate, openPopup, updateTab, debugMode],
+  )
 
+  // Listen for messages from the iframe
+  useEffect(() => {
     window.addEventListener("message", handleMessage)
     return () => window.removeEventListener("message", handleMessage)
-  }, [activeTabId, activeTab, navigate, openPopup, updateTab, debugMode])
+  }, [handleMessage])
 
   // Handle keyboard shortcuts
   useEffect(() => {
@@ -722,34 +777,16 @@ export function ProxyBrowser() {
       <div className="flex items-center bg-gray-900 border-b border-gray-700 overflow-hidden">
         <div ref={tabsContainerRef} className="flex-1 flex items-center overflow-x-auto scrollbar-hide">
           {tabs.map((tab) => (
-            <div
+            <MemoizedTabItem
               key={tab.id}
-              id={`tab-${tab.id}`}
-              className={`flex items-center min-w-[140px] max-w-[200px] h-9 px-3 py-1 border-r border-gray-700 ${
-                activeTabId === tab.id ? "bg-gray-800" : "bg-gray-900 hover:bg-gray-800"
-              } cursor-pointer group`}
-              onClick={() => activateTab(tab.id)}
-            >
-              {tab.loading ? (
-                <div className="w-4 h-4 mr-2 rounded-full border-2 border-t-transparent border-blue-500 animate-spin" />
-              ) : tab.favicon ? (
-                <img src={tab.favicon || "/placeholder.svg"} alt="" className="w-4 h-4 mr-2" />
-              ) : (
-                <Globe className="w-4 h-4 mr-2 text-gray-400" />
-              )}
-              <div className="flex-1 truncate text-sm">{tab.title || "New Tab"}</div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100 ml-1"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  closeTab(tab.id)
-                }}
-              >
-                <X className="h-3 w-3" />
-              </Button>
-            </div>
+              tab={tab}
+              isActive={activeTabId === tab.id}
+              onActivate={() => activateTab(tab.id)}
+              onClose={(e) => {
+                e.stopPropagation()
+                closeTab(tab.id)
+              }}
+            />
           ))}
         </div>
         <Button
@@ -1142,11 +1179,7 @@ export function ProxyBrowser() {
       )}
 
       <div className="flex-1 w-full bg-black relative">
-        {activeTab?.loading && (
-          <div className="absolute top-0 left-0 w-full h-1 bg-gray-800 z-50">
-            <div className="h-full bg-blue-500 animate-progress"></div>
-          </div>
-        )}
+        {activeTab?.loading && <LoadingIndicator />}
 
         {/* Error state */}
         {activeTab?.error && (
@@ -1174,6 +1207,14 @@ export function ProxyBrowser() {
                 ref={iframeRef}
                 src={`/api/simple-proxy?url=${encodeURIComponent(activeTab.url)}`}
                 className="w-full h-full border-0 bg-white"
+                onError={() => {
+                  if (activeTabId) {
+                    updateTab(activeTabId, {
+                      loading: false,
+                      error: "Failed to load the page. The URL might be invalid or the server is unreachable.",
+                    })
+                  }
+                }}
                 sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-modals allow-popups allow-presentation"
                 allow="accelerometer; autoplay; camera; encrypted-media; fullscreen; geolocation; gyroscope; microphone; midi; payment; picture-in-picture"
                 title="Browser content"
@@ -1197,20 +1238,7 @@ export function ProxyBrowser() {
                     }
                   }
 
-                  if (debugMode) {
-                    console.log(`Page loaded: ${activeTab.url}`)
-                  }
-                }}
-                onError={(e) => {
-                  if (activeTabId) {
-                    updateTab(activeTabId, {
-                      loading: false,
-                      error: "Failed to load the page",
-                    })
-                  }
-                  if (debugMode) {
-                    console.error("Iframe error:", e)
-                  }
+                  debugMode && console.log(`Page loaded: ${activeTab.url}`)
                 }}
               />
             ) : (
@@ -1245,27 +1273,6 @@ export function ProxyBrowser() {
                     </div>
                   </div>
                 )}
-
-                <div className="mt-8 p-4 bg-gray-800 rounded-lg max-w-md">
-                  <h3 className="text-lg font-medium mb-2 text-gray-300">Search the Web</h3>
-                  <div className="flex">
-                    <Input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search with Google"
-                      className="flex-1 bg-gray-700 border-gray-600 text-white"
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          performSearch()
-                        }
-                      }}
-                    />
-                    <Button onClick={performSearch} className="ml-2">
-                      Search
-                    </Button>
-                  </div>
-                </div>
               </div>
             )}
           </div>

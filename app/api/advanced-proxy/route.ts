@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import * as cheerio from "cheerio"
-import { parse } from "ua-parser-js"
+import UAParser from "ua-parser-js"
 
 export async function GET(request: NextRequest) {
   // Get the target URL from query parameters
@@ -23,7 +23,8 @@ export async function GET(request: NextRequest) {
 
     // Parse user agent for better browser spoofing
     const userAgent = request.headers.get("user-agent") || ""
-    const uaInfo = parse(userAgent)
+    const parser = new UAParser(userAgent)
+    const uaInfo = parser.getResult()
 
     // Create a more realistic browser user agent
     const spoofedUserAgent =
