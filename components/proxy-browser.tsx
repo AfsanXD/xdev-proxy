@@ -13,7 +13,6 @@ import {
   X,
   BookmarkIcon,
   HistoryIcon,
-  Search,
   Shield,
   Volume2,
   VolumeX,
@@ -36,22 +35,6 @@ interface Tab {
   historyIndex: number
 }
 
-// Search engines configuration
-const SEARCH_ENGINES = {
-  google: {
-    name: "Google",
-    url: "https://www.google.com/search?q=",
-  },
-  bing: {
-    name: "Bing",
-    url: "https://www.bing.com/search?q=",
-  },
-  duckduckgo: {
-    name: "DuckDuckGo",
-    url: "https://duckduckgo.com/?q=",
-  },
-}
-
 export function ProxyBrowser() {
   // Tab management
   const [tabs, setTabs] = useState<Tab[]>([])
@@ -70,7 +53,6 @@ export function ProxyBrowser() {
   const [isSecure, setIsSecure] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
   const [isSearching, setIsSearching] = useState(false)
-  const [currentSearchEngine, setCurrentSearchEngine] = useState<keyof typeof SEARCH_ENGINES>("google")
   const [debugMode, setDebugMode] = useState(false)
 
   const iframeRef = useRef<HTMLIFrameElement>(null)
@@ -92,12 +74,6 @@ export function ProxyBrowser() {
       } catch (e) {
         console.error("Failed to parse bookmarks:", e)
       }
-    }
-
-    // Try to load saved search engine preference
-    const savedSearchEngine = localStorage.getItem("proxy-search-engine")
-    if (savedSearchEngine && SEARCH_ENGINES[savedSearchEngine as keyof typeof SEARCH_ENGINES]) {
-      setCurrentSearchEngine(savedSearchEngine as keyof typeof SEARCH_ENGINES)
     }
 
     // Try to load saved tabs
@@ -144,11 +120,6 @@ export function ProxyBrowser() {
     localStorage.setItem("proxy-bookmarks", JSON.stringify(bookmarks))
   }, [bookmarks])
 
-  // Save search engine preference
-  useEffect(() => {
-    localStorage.setItem("proxy-search-engine", currentSearchEngine)
-  }, [currentSearchEngine])
-
   // Update URL input when active tab changes
   useEffect(() => {
     if (activeTab) {
@@ -159,7 +130,7 @@ export function ProxyBrowser() {
       setIsSearching(
         activeTab.url.includes("google.com/search") ||
           activeTab.url.includes("bing.com/search") ||
-          activeTab.url.includes("duckduckgo.com"),
+          activeTab.url.includes("duckduckgo.com")
       )
     } else {
       setUrl("")
@@ -378,13 +349,13 @@ export function ProxyBrowser() {
 
       // If it has spaces or doesn't have dots, treat as search query
       if (input.includes(" ") || !input.includes(".")) {
-        const searchUrl = `${SEARCH_ENGINES[currentSearchEngine].url}${encodeURIComponent(input)}`
+        const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(input)}`
         navigate(searchUrl)
       } else {
         navigate(input)
       }
     },
-    [url, navigate, currentSearchEngine],
+    [url, navigate],
   )
 
   // Open a popup
@@ -498,28 +469,15 @@ export function ProxyBrowser() {
     })
   }, [debugMode])
 
-  // Cycle through search engines
-  const cycleSearchEngine = useCallback(() => {
-    const engines = Object.keys(SEARCH_ENGINES) as Array<keyof typeof SEARCH_ENGINES>
-    const currentIndex = engines.indexOf(currentSearchEngine)
-    const nextIndex = (currentIndex + 1) % engines.length
-    setCurrentSearchEngine(engines[nextIndex])
-
-    toast({
-      title: "Search Engine Changed",
-      description: `Now using ${SEARCH_ENGINES[engines[nextIndex]].name}`,
-    })
-  }, [currentSearchEngine])
-
   // Perform a search
   const performSearch = useCallback(() => {
     if (!searchQuery.trim()) return
 
-    const searchUrl = `${SEARCH_ENGINES[currentSearchEngine].url}${encodeURIComponent(searchQuery)}`
+    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`
     navigate(searchUrl)
     setSearchQuery("")
     setIsSearching(false)
-  }, [searchQuery, navigate, currentSearchEngine])
+  }, [searchQuery, navigate])
 
   // Scroll tabs into view when they overflow
   const scrollTabIntoView = useCallback((tabId: string) => {
@@ -733,12 +691,6 @@ export function ProxyBrowser() {
         }
       }
 
-      // Alt+S to cycle search engines
-      if (e.altKey && e.key === "s") {
-        e.preventDefault()
-        cycleSearchEngine()
-      }
-
       // Alt+D to toggle debug mode
       if (e.altKey && e.key === "d") {
         e.preventDefault()
@@ -760,7 +712,6 @@ export function ProxyBrowser() {
     activeTabId,
     tabs,
     activateTab,
-    cycleSearchEngine,
     toggleDebugMode,
   ])
 
@@ -918,23 +869,6 @@ export function ProxyBrowser() {
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={cycleSearchEngine}
-                className="text-gray-300 hover:text-white hover:bg-gray-800"
-              >
-                <Search className="h-4 w-4" />
-                <span className="ml-1 text-xs">{currentSearchEngine.charAt(0).toUpperCase()}</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>Change Search Engine (Alt+S): {SEARCH_ENGINES[currentSearchEngine].name}</p>
-            </TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
                 onClick={() => {
                   setShowBookmarks(!showBookmarks)
                   setShowHistory(false)
@@ -1015,369 +949,5 @@ export function ProxyBrowser() {
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                <p>{isCurrentUrlBookmarked ? "Remove bookmark (Ctrl+D)" : "Add bookmark (Ctrl+D)"}</p>
+                <p>{isCurrentUrlBookmarked ? "Remove bookmark (Ctrl+D)" : "Add bookmark (Ctrl+D)"}</p>\
               </TooltipContent>
-            </Tooltip>
-          )}
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant={debugMode ? "default" : "ghost"}
-                size="icon"
-                onClick={toggleDebugMode}
-                className={`text-gray-300 hover:text-white hover:bg-gray-800 ${debugMode ? "bg-gray-700" : ""}`}
-              >
-                <span className="text-xs font-mono">DBG</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>Toggle Debug Mode (Alt+D)</p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      </div>
-
-      {/* Search bar */}
-      {isSearching && (
-        <div className="flex items-center bg-gray-800 p-2 border-b border-gray-700">
-          <Search className="h-4 w-4 text-gray-400 mr-2 ml-2" />
-          <Input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={`Search with ${SEARCH_ENGINES[currentSearchEngine].name}`}
-            className="flex-1 border-0 focus-visible:ring-0 focus-visible:ring-offset-0 bg-gray-800 text-white h-8"
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                performSearch()
-              }
-            }}
-          />
-          <Button onClick={performSearch} className="ml-2 bg-gray-700 hover:bg-gray-600 text-white h-8">
-            Search
-          </Button>
-        </div>
-      )}
-
-      {/* Bookmarks panel */}
-      {showBookmarks && (
-        <div className="bg-gray-800 border-b border-gray-700 max-h-64 overflow-y-auto">
-          <div className="p-2 border-b border-gray-700 flex justify-between items-center">
-            <h3 className="font-medium">Bookmarks</h3>
-            <Button variant="ghost" size="sm" onClick={() => setShowBookmarks(false)} className="h-6 w-6 p-0">
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-          {bookmarks.length === 0 ? (
-            <div className="p-4 text-center text-gray-400">
-              No bookmarks yet. Add some by clicking the bookmark icon.
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-1 p-2">
-              {bookmarks.map((bookmark, index) => (
-                <div
-                  key={index}
-                  className="flex items-center p-2 hover:bg-gray-700 rounded cursor-pointer"
-                  onClick={() => {
-                    navigate(bookmark.url)
-                    setShowBookmarks(false)
-                  }}
-                >
-                  {bookmark.favicon ? (
-                    <img src={bookmark.favicon || "/placeholder.svg"} alt="" className="w-6 h-6 mr-2" />
-                  ) : (
-                    <div className="w-6 h-6 bg-gray-700 rounded flex items-center justify-center mr-2">
-                      {bookmark.title.charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                  <div className="flex-1 truncate">
-                    <div className="text-sm font-medium truncate">{bookmark.title}</div>
-                    <div className="text-xs text-gray-400 truncate">{bookmark.url}</div>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 w-6 p-0 ml-2"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setBookmarks(bookmarks.filter((_, i) => i !== index))
-                    }}
-                  >
-                    <X className="h-3 w-3" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* History panel */}
-      {showHistory && (
-        <div className="bg-gray-800 border-b border-gray-700 max-h-64 overflow-y-auto">
-          <div className="p-2 border-b border-gray-700 flex justify-between items-center">
-            <h3 className="font-medium">History</h3>
-            <div className="flex items-center">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs text-gray-400 hover:text-white mr-2"
-                onClick={() => {
-                  if (confirm("Clear all browsing history?")) {
-                    // Clear history from all tabs
-                    setTabs((prevTabs) =>
-                      prevTabs.map((tab) => ({
-                        ...tab,
-                        history: [],
-                        historyIndex: -1,
-                      })),
-                    )
-                  }
-                }}
-              >
-                Clear All
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setShowHistory(false)} className="h-6 w-6 p-0">
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          {!activeTab || activeTab.history.length === 0 ? (
-            <div className="p-4 text-center text-gray-400">No browsing history yet.</div>
-          ) : (
-            <div className="grid grid-cols-1 gap-1 p-2">
-              {[...activeTab.history].reverse().map((entry, index) => (
-                <div
-                  key={index}
-                  className="flex items-center p-2 hover:bg-gray-700 rounded cursor-pointer"
-                  onClick={() => {
-                    navigate(entry.url)
-                    setShowHistory(false)
-                  }}
-                >
-                  <div className="w-6 h-6 bg-gray-700 rounded flex items-center justify-center mr-2">
-                    <HistoryIcon className="h-3 w-3" />
-                  </div>
-                  <div className="flex-1 truncate">
-                    <div className="text-sm font-medium truncate">{entry.title}</div>
-                    <div className="text-xs text-gray-400 truncate">{entry.url}</div>
-                    <div className="text-xs text-gray-500">{new Date(entry.timestamp).toLocaleString()}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Popup tabs */}
-      {popups.length > 0 && (
-        <div className="flex bg-gray-900 border-b border-gray-700 overflow-x-auto">
-          <Button
-            variant={activePopupId === null ? "default" : "ghost"}
-            className={`px-3 py-1 rounded-none ${activePopupId === null ? "bg-gray-700" : "bg-gray-900 text-gray-300"}`}
-            onClick={() => setActivePopupId(null)}
-          >
-            {activeTab?.title || (activeTab?.url ? new URL(activeTab.url).hostname : "Main")}
-          </Button>
-          {popups.map((popup) => (
-            <div key={popup.id} className="flex items-center">
-              <Button
-                variant={activePopupId === popup.id ? "default" : "ghost"}
-                className={`px-3 py-1 rounded-none ${activePopupId === popup.id ? "bg-gray-700" : "bg-gray-900 text-gray-300"}`}
-                onClick={() => setActivePopupId(popup.id)}
-              >
-                {popup.title || new URL(popup.url).hostname.replace("www.", "")}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="p-0 h-6 w-6 rounded-full text-gray-400 hover:text-white"
-                onClick={() => closePopup(popup.id)}
-              >
-                <X className="h-3 w-3" />
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="flex-1 w-full bg-black relative">
-        {activeTab?.loading && (
-          <div className="absolute top-0 left-0 w-full h-1 bg-gray-800 z-50">
-            <div className="h-full bg-blue-500 animate-progress"></div>
-          </div>
-        )}
-
-        {/* Error state */}
-        {activeTab?.error && (
-          <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center bg-gray-900 z-40">
-            <div className="bg-gray-800 p-6 rounded-lg max-w-md text-center">
-              <div className="text-red-500 text-5xl mb-4">⚠️</div>
-              <h3 className="text-xl font-bold mb-2">Something went wrong</h3>
-              <p className="text-gray-300 mb-4">{activeTab.error}</p>
-              <div className="flex justify-center space-x-4">
-                <Button onClick={handleRefresh}>Try Again</Button>
-                <Button variant="outline" onClick={goHome}>
-                  Go Home
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Main content frame */}
-        {!activePopupId && (
-          <div className="w-full h-full">
-            {activeTab?.url ? (
-              <iframe
-                key={activeTab.iframeKey}
-                ref={iframeRef}
-                src={`/api/simple-proxy?url=${encodeURIComponent(activeTab.url)}`}
-                className="w-full h-full border-0 bg-white"
-                sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-modals allow-popups allow-presentation"
-                allow="accelerometer; autoplay; camera; encrypted-media; fullscreen; geolocation; gyroscope; microphone; midi; payment; picture-in-picture"
-                title="Browser content"
-                onLoad={() => {
-                  if (activeTabId) {
-                    updateTab(activeTabId, { loading: false })
-                  }
-
-                  // Try to get the page title and favicon
-                  if (iframeRef.current && iframeRef.current.contentWindow) {
-                    try {
-                      iframeRef.current.contentWindow.postMessage(
-                        {
-                          type: "PROXY_COMMAND",
-                          action: "GET_TITLE_AND_FAVICON",
-                        },
-                        "*",
-                      )
-                    } catch (e) {
-                      console.error("Failed to send get title command to iframe:", e)
-                    }
-                  }
-
-                  if (debugMode) {
-                    console.log(`Page loaded: ${activeTab.url}`)
-                  }
-                }}
-                onError={(e) => {
-                  if (activeTabId) {
-                    updateTab(activeTabId, {
-                      loading: false,
-                      error: "Failed to load the page",
-                    })
-                  }
-                  if (debugMode) {
-                    console.error("Iframe error:", e)
-                  }
-                }}
-              />
-            ) : (
-              <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-black">
-                <Globe className="h-16 w-16 text-gray-600 mb-4" />
-                <p className="text-gray-400 mb-8">Enter a URL in the address bar above to begin browsing</p>
-
-                {bookmarks.length > 0 && (
-                  <div className="w-full max-w-2xl">
-                    <h3 className="text-lg font-medium mb-4 text-gray-300">Bookmarks</h3>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                      {bookmarks.slice(0, 8).map((bookmark, index) => (
-                        <div
-                          key={index}
-                          className="flex flex-col items-center p-4 bg-gray-800 rounded-lg hover:bg-gray-700 cursor-pointer"
-                          onClick={() => navigate(bookmark.url)}
-                        >
-                          {bookmark.favicon ? (
-                            <img
-                              src={bookmark.favicon || "/placeholder.svg"}
-                              alt=""
-                              className="w-12 h-12 rounded-full mb-2"
-                            />
-                          ) : (
-                            <div className="w-12 h-12 bg-gray-700 rounded-full flex items-center justify-center mb-2">
-                              {bookmark.title.charAt(0).toUpperCase()}
-                            </div>
-                          )}
-                          <div className="text-sm font-medium text-center truncate w-full">{bookmark.title}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <div className="mt-8 p-4 bg-gray-800 rounded-lg max-w-md">
-                  <h3 className="text-lg font-medium mb-2 text-gray-300">Search the Web</h3>
-                  <div className="flex">
-                    <Input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder={`Search with ${SEARCH_ENGINES[currentSearchEngine].name}`}
-                      className="flex-1 bg-gray-700 border-gray-600 text-white"
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          performSearch()
-                        }
-                      }}
-                    />
-                    <Button onClick={performSearch} className="ml-2">
-                      Search
-                    </Button>
-                  </div>
-                  <div className="flex justify-center mt-2">
-                    {Object.entries(SEARCH_ENGINES).map(([key, engine]) => (
-                      <Button
-                        key={key}
-                        variant={currentSearchEngine === key ? "default" : "ghost"}
-                        size="sm"
-                        className="mx-1"
-                        onClick={() => setCurrentSearchEngine(key as keyof typeof SEARCH_ENGINES)}
-                      >
-                        {engine.name}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Popup frames */}
-        {popups.map((popup) => (
-          <div key={popup.id} className={`w-full h-full ${activePopupId === popup.id ? "block" : "hidden"}`}>
-            <iframe
-              src={`/api/simple-proxy?url=${encodeURIComponent(popup.url)}`}
-              className="w-full h-full border-0 bg-white"
-              sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-modals allow-popups allow-presentation"
-              allow="accelerometer; autoplay; camera; encrypted-media; fullscreen; geolocation; gyroscope; microphone; midi; payment; picture-in-picture"
-              title={`Popup content ${popup.id}`}
-              onLoad={() => {
-                // Try to get the popup title
-                const iframe = document.querySelector(`iframe[title="Popup content ${popup.id}"]`) as HTMLIFrameElement
-                if (iframe && iframe.contentWindow) {
-                  try {
-                    iframe.contentWindow.postMessage(
-                      {
-                        type: "PROXY_COMMAND",
-                        action: "GET_TITLE",
-                        popupId: popup.id,
-                      },
-                      "*",
-                    )
-                  } catch (e) {
-                    console.error("Failed to send get title command to popup iframe:", e)
-                  }
-                }
-              }}
-            />
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}

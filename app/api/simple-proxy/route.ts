@@ -195,7 +195,7 @@ function processHtml(html: string, baseUrl: URL): string {
   const baseUrlPath = baseUrl.href.substring(0, baseUrl.href.lastIndexOf("/") + 1)
 
   // Replace relative URLs in src and href attributes
-  const processedHtml = html
+  let processedHtml = html
     .replace(/src="\/([^"]*)"/g, `src="${baseUrlString}/$1"`)
     .replace(/href="\/([^"]*)"/g, `href="${baseUrlString}/$1"`)
     .replace(/src='\/([^']*)'/g, `src='${baseUrlString}/$1'`)
@@ -227,3 +227,502 @@ function processHtml(html: string, baseUrl: URL): string {
         })
         .join(", ")
       return `srcset="${newSrcset}"`
+    })
+
+    // Fix inline styles with url()
+    .replace(/url$$['"]?(?!http|\/\/)([^'")]+)['"]?$$/g, `url('${baseUrlPath}$1')`)
+    .replace(/url$$['"]?\/([^'")]+)['"]?$$/g, `url('${baseUrlString}/$1')`)
+
+  // Add base tag to head if not present
+  if (!processedHtml.includes("<base")) {
+    processedHtml = processedHtml.replace(/<head>/i, `<head><base href="${baseUrlString}/">`)
+  }
+
+  // Inject our proxy script to handle dynamic content
+  const proxyScript = `
+    <script>
+      // Store the original window.open
+      const originalWindowOpen = window.open;
+      
+      // Override window.open to capture popups
+      window.open = function(url, name, features) {
+        if (!url) return null;
+        
+        // Resolve relative URLs
+        let absoluteUrl = url;
+        if (!url.startsWith('http') && !url.startsWith('//')) {
+          const base = document.querySelector('base');
+          const baseHref = base ? base.href : window.location.origin + '/';
+          absoluteUrl = new URL(url, baseHref).href;
+        }
+        
+        // Send message to parent to open in our proxy
+        window.parent.postMessage({
+          type: 'PROXY_EVENT',
+          action: 'OPEN_POPUP',
+          url: absoluteUrl,
+          title: document.title
+        }, '*');
+        
+        // Return a mock window object
+        return {
+          closed: false,
+          close: function() { 
+            this.closed = true;
+          },
+          focus: function() {},
+          blur: function() {},
+          postMessage: function() {}
+        };
+      };
+      
+      // Intercept all fetch requests to route through our proxy
+      const originalFetch = window.fetch;
+      window.fetch = function(url, options = {}) {
+        try {
+          if (!url) return originalFetch(url, options);
+          
+          let urlObj;
+          let urlString = '';
+          
+          if (typeof url === 'string') {
+            urlString = url;
+            // Handle relative URLs
+            if (!url.startsWith('http') && !url.startsWith('/api/') && !url.startsWith('data:')) {
+              const base = document.querySelector('base');
+              const baseHref = base ? base.href : window.location.origin + '/';
+              urlString = new URL(url, baseHref).href;
+            }
+            urlObj = new URL(urlString, window.location.href);
+          } else if (url instanceof Request) {
+            urlString = url.url;
+            urlObj = new URL(url.url, window.location.href);
+          } else {
+            return originalFetch(url, options);
+          }
+          
+          // Only proxy external URLs
+          if (urlObj.origin !== window.location.origin && !urlString.startsWith('/api/') && !urlString.startsWith('data:')) {
+            // Determine which proxy endpoint to use based on the content type
+            let proxyUrl = '/api/simple-proxy?url=' + encodeURIComponent(urlObj.href);
+            
+            // For media content, use the streaming endpoint
+            const mediaExtensions = ['.mp4', '.webm', '.mp3', '.ogg', '.m4a', '.wav', '.avi', '.mov', '.flv'];
+            const isMedia = mediaExtensions.some(ext => urlString.toLowerCase().includes(ext));
+            
+            if (isMedia) {
+              proxyUrl = '/api/stream?url=' + encodeURIComponent(urlObj.href);
+            }
+            
+            // Create new options with improved headers
+            const newOptions = { ...options };
+            
+            // Add referer if not present
+            if (!newOptions.headers) {
+              newOptions.headers = {};
+            } else if (newOptions.headers instanceof Headers) {
+              // Convert Headers to plain object
+              const plainHeaders = {};
+              newOptions.headers.forEach((value, key) => {
+                plainHeaders[key] = value;
+              });
+              newOptions.headers = plainHeaders;
+            }
+            
+            // Add referer if not present
+            if (!newOptions.headers.referer && !newOptions.headers.Referer) {
+              newOptions.headers.referer = window.location.href;
+            }
+            
+            if (url instanceof Request) {
+              // Create a new Request with the proxied URL
+              const newRequest = new Request(proxyUrl, {
+                method: url.method,
+                headers: newOptions.headers,
+                body: url.body,
+                mode: 'cors',
+                credentials: url.credentials,
+                cache: url.cache,
+                redirect: url.redirect
+              });
+              return originalFetch(newRequest, newOptions);
+            } else {
+              return originalFetch(proxyUrl, newOptions);
+            }
+          }
+        } catch (e) {
+          console.error('Error in fetch proxy:', e);
+        }
+        return originalFetch(url, options);
+      };
+      
+      // Intercept XHR requests
+      const originalXhrOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        try {
+          if (url && typeof url === 'string') {
+            // Handle relative URLs
+            if (!url.startsWith('http') && !url.startsWith('/api/') && !url.startsWith('data:')) {
+              const base = document.querySelector('base');
+              const baseHref = base ? base.href : window.location.origin + '/';
+              url = new URL(url, baseHref).href;
+            }
+            
+            const urlObj = new URL(url, window.location.href);
+            if (urlObj.origin !== window.location.origin && !url.startsWith('/api/') && !url.startsWith('data:')) {
+              const proxyUrl = '/api/simple-proxy?url=' + encodeURIComponent(urlObj.href);
+              return originalXhrOpen.call(this, method, proxyUrl, ...rest);
+            }
+          }
+        } catch (e) {
+          console.error('Error in XHR proxy:', e);
+        }
+        return originalXhrOpen.call(this, method, url, ...rest);
+      };
+      
+      // Intercept link clicks to keep navigation within the proxy
+      document.addEventListener('click', function(e) {
+        const link = e.target.closest('a');
+        if (link && link.href) {
+          const url = link.href;
+          if (!url.startsWith('javascript:') && !url.startsWith('#') && !url.startsWith('data:')) {
+            e.preventDefault();
+            window.parent.postMessage({
+              type: 'PROXY_EVENT',
+              action: 'NAVIGATE',
+              url: url
+            }, '*');
+          }
+        }
+      }, true);
+      
+      // Handle form submissions
+      document.addEventListener('submit', function(e) {
+        const form = e.target;
+        if (form.method.toLowerCase() === 'get' && form.action) {
+          e.preventDefault();
+          
+          // Build the URL with form data
+          const formData = new FormData(form);
+          const url = new URL(form.action);
+          for (const [key, value] of formData.entries()) {
+            url.searchParams.append(key, value);
+          }
+          
+          window.parent.postMessage({
+            type: 'PROXY_EVENT',
+            action: 'NAVIGATE',
+            url: url.href
+          }, '*');
+        }
+      });
+      
+      // Notify parent about page load
+      window.addEventListener('load', function() {
+        window.parent.postMessage({
+          type: 'PROXY_EVENT',
+          action: 'LOADING_STATE',
+          isLoading: false
+        }, '*');
+        
+        // Send page title to parent
+        window.parent.postMessage({
+          type: 'PROXY_EVENT',
+          action: 'PAGE_TITLE',
+          title: document.title
+        }, '*');
+        
+        // Try to find favicon
+        const sendFavicon = () => {
+          let faviconUrl = '';
+          
+          // Check for link rel="icon" or rel="shortcut icon"
+          const iconLink = document.querySelector('link[rel="icon"], link[rel="shortcut icon"]');
+          if (iconLink && iconLink.href) {
+            faviconUrl = iconLink.href;
+          }
+          
+          // If no icon found, try the default /favicon.ico
+          if (!faviconUrl) {
+            const base = document.querySelector('base');
+            const baseHref = base ? base.href : window.location.origin + '/';
+            faviconUrl = new URL('/favicon.ico', baseHref).href;
+          }
+          
+          if (faviconUrl) {
+            window.parent.postMessage({
+              type: 'PROXY_EVENT',
+              action: 'FAVICON',
+              favicon: faviconUrl
+            }, '*');
+          }
+        };
+        
+        // Send favicon info
+        setTimeout(sendFavicon, 100);
+      });
+      
+      // Notify parent about page errors
+      window.addEventListener('error', function(e) {
+        if (e.target.tagName === 'IMG' || e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK') {
+          window.parent.postMessage({
+            type: 'PROXY_EVENT',
+            action: 'ERROR',
+            message: 'Error loading resource: ' + (e.target.src || e.target.href)
+          }, '*');
+        }
+      }, true);
+      
+      // Fix video playback issues
+      document.addEventListener('DOMContentLoaded', function() {
+        // Find all video and audio elements and ensure they can play
+        const mediaElements = document.querySelectorAll('video, audio');
+        mediaElements.forEach(media => {
+          // Add controls if not present
+          if (!media.hasAttribute('controls')) {
+            media.setAttribute('controls', 'true');
+          }
+          
+          // Fix source elements
+          const sources = media.querySelectorAll('source');
+          sources.forEach(source => {
+            if (source.src && !source.src.startsWith('/api/')) {
+              source.setAttribute('src', '/api/stream?url=' + encodeURIComponent(source.src));
+            }
+          });
+          
+          // Fix direct src attribute
+          if (media.src && !media.src.startsWith('/api/')) {
+            media.setAttribute('src', '/api/stream?url=' + encodeURIComponent(media.src));
+          }
+          
+          // Force reload the media element
+          media.load();
+        });
+      });
+      
+      // Listen for commands from the parent
+      window.addEventListener('message', function(event) {
+        if (event.data && event.data.type === 'PROXY_COMMAND') {
+          switch (event.data.action) {
+            case 'GET_TITLE':
+              // Send the page title back to the parent
+              window.parent.postMessage({
+                type: 'PROXY_EVENT',
+                action: 'PAGE_TITLE',
+                title: document.title,
+                popupId: event.data.popupId
+              }, '*');
+              break;
+              
+            case 'GET_TITLE_AND_FAVICON':
+              // Send the page title back to the parent
+              window.parent.postMessage({
+                type: 'PROXY_EVENT',
+                action: 'PAGE_TITLE',
+                title: document.title,
+                popupId: event.data.popupId
+              }, '*');
+              
+              // Try to find favicon
+              let faviconUrl = '';
+              const iconLink = document.querySelector('link[rel="icon"], link[rel="shortcut icon"]');
+              if (iconLink && iconLink.href) {
+                faviconUrl = iconLink.href;
+              }
+              
+              // If no icon found, try the default /favicon.ico
+              if (!faviconUrl) {
+                const base = document.querySelector('base');
+                const baseHref = base ? base.href : window.location.origin + '/';
+                faviconUrl = new URL('/favicon.ico', baseHref).href;
+              }
+              
+              if (faviconUrl) {
+                window.parent.postMessage({
+                  type: 'PROXY_EVENT',
+                  action: 'FAVICON',
+                  favicon: faviconUrl
+                }, '*');
+              }
+              break;
+              
+            case 'TOGGLE_MUTE':
+              // Mute/unmute all media elements
+              const mediaElements = document.querySelectorAll('video, audio');
+              mediaElements.forEach(media => {
+                media.muted = event.data.value;
+              });
+              break;
+              
+            case 'CLEAR_BROWSING_DATA':
+              // Clear localStorage
+              try {
+                localStorage.clear();
+                console.log('localStorage cleared');
+              } catch (e) {
+                console.error('Failed to clear localStorage:', e);
+              }
+              
+              // Clear sessionStorage
+              try {
+                sessionStorage.clear();
+                console.log('sessionStorage cleared');
+              } catch (e) {
+                console.error('Failed to clear sessionStorage:', e);
+              }
+              
+              // Clear cookies
+              try {
+                const cookies = document.cookie.split(";");
+                for (let i = 0; i < cookies.length; i++) {
+                  const cookie = cookies[i];
+                  const eqPos = cookie.indexOf("=");
+                  const name = eqPos > -1 ? cookie.substr(0, eqPos).trim() : cookie.trim();
+                  document.cookie = name + "=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/";
+                }
+                console.log('Cookies cleared');
+              } catch (e) {
+                console.error('Failed to clear cookies:', e);
+              }
+              
+              // Force reload all images
+              try {
+                const images = document.querySelectorAll('img');
+                images.forEach(img => {
+                  if (img.src) {
+                    const src = img.src;
+                    img.src = '';
+                    setTimeout(() => { img.src = src; }, 10);
+                  }
+                });
+              } catch (e) {
+                console.error('Failed to reload images:', e);
+              }
+              break;
+          }
+        }
+      });
+    </script>
+  `
+
+  // Add our proxy script to the end of the body
+  if (processedHtml.includes("</body>")) {
+    processedHtml = processedHtml.replace("</body>", `${proxyScript}</body>`)
+  } else {
+    processedHtml += proxyScript
+  }
+
+  return processedHtml
+}
+
+// Helper function to process JavaScript
+function processJavaScript(js: string, baseUrl: URL): string {
+  // Replace URLs in fetch calls
+  const processedJs = js
+    // Replace fetch("http://example.com/api") with fetch("/api/simple-proxy?url=http://example.com/api")
+    .replace(/fetch\s*\(\s*(['"`])((https?:)?\/\/[^'"`]+)\1/g, "fetch($1/api/simple-proxy?url=$2$1")
+    // Replace XHR open("GET", "http://example.com/api") with open("GET", "/api/simple-proxy?url=http://example.com/api")
+    .replace(
+      /\.open\s*\(\s*(['"`])(GET|POST|PUT|DELETE|PATCH)\1\s*,\s*(['"`])((https?:)?\/\/[^'"`]+)\3/g,
+      ".open($1$2$1, $3/api/simple-proxy?url=$4$3",
+    )
+
+  return processedJs
+}
+
+// Handle POST requests for form submissions
+export async function POST(request: NextRequest) {
+  const { searchParams } = new URL(request.url)
+  const targetUrl = searchParams.get("url")
+
+  if (!targetUrl) {
+    return NextResponse.json({ error: "No URL provided" }, { status: 400 })
+  }
+
+  try {
+    // Get the request body
+    const contentType = request.headers.get("Content-Type") || ""
+
+    // Create headers for the forwarded request
+    const headers = new Headers({
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Content-Type": contentType,
+    })
+
+    // Forward cookies
+    const cookies = request.headers.get("cookie")
+    if (cookies) {
+      headers.set("Cookie", cookies)
+    }
+
+    // Forward the POST request to the target URL with a timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
+
+    const response = await fetch(targetUrl, {
+      method: "POST",
+      headers,
+      body: request.body,
+      redirect: "follow",
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeoutId))
+
+    // Process the response similar to GET
+    const responseContentType = response.headers.get("Content-Type") || ""
+    const responseHeaders = new Headers()
+
+    // Copy important headers
+    const headersToForward = ["Content-Type", "Content-Length", "Cache-Control", "Set-Cookie"]
+
+    headersToForward.forEach((header) => {
+      const value = response.headers.get(header)
+      if (value) responseHeaders.set(header, value)
+    })
+
+    responseHeaders.set("Access-Control-Allow-Origin", "*")
+    responseHeaders.set("Access-Control-Allow-Credentials", "true")
+
+    if (responseContentType.includes("text/html")) {
+      const html = await response.text()
+      const url = new URL(targetUrl)
+      const processedHtml = processHtml(html, url)
+      return new NextResponse(processedHtml, { headers: responseHeaders })
+    } else if (responseContentType.includes("application/json")) {
+      const json = await response.text()
+      return new NextResponse(json, { headers: responseHeaders })
+    } else {
+      const content = await response.text()
+      return new NextResponse(content, { headers: responseHeaders })
+    }
+  } catch (error) {
+    console.error("Proxy error:", error)
+
+    // Check if it's an AbortError (timeout)
+    if (error instanceof Error && error.name === "AbortError") {
+      return NextResponse.json(
+        {
+          error: "Request timed out",
+          details: "The request took too long to complete",
+        },
+        { status: 504 },
+      )
+    }
+
+    return NextResponse.json({ error: "Failed to process the request" }, { status: 500 })
+  }
+}
+
+// Handle OPTIONS requests for CORS preflight
+export async function OPTIONS() {
+  const headers = new Headers({
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE, PATCH",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Max-Age": "86400",
+  })
+
+  return new NextResponse(null, { headers })
+}
