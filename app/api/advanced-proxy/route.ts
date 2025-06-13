@@ -1,4 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
+import * as cheerio from "cheerio"
+import { parse } from "ua-parser-js"
 
 export async function GET(request: NextRequest) {
   // Get the target URL from query parameters
@@ -19,10 +21,21 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Access to this domain is not allowed" }, { status: 403 })
     }
 
+    // Parse user agent for better browser spoofing
+    const userAgent = request.headers.get("user-agent") || ""
+    const uaInfo = parse(userAgent)
+
+    // Create a more realistic browser user agent
+    const spoofedUserAgent =
+      uaInfo.browser.name === "Chrome"
+        ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        : uaInfo.browser.name === "Firefox"
+          ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0"
+          : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
     // Create request headers that mimic a real browser
     const headers = new Headers({
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "User-Agent": spoofedUserAgent,
       Accept:
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
       "Accept-Language": "en-US,en;q=0.9",
@@ -112,8 +125,8 @@ export async function GET(request: NextRequest) {
       // For HTML content, we need to modify it to make it work in our proxy
       const html = await response.text()
 
-      // Process HTML to fix relative URLs and other issues
-      const processedHtml = processHtml(html, url)
+      // Process HTML using cheerio for better parsing
+      const processedHtml = processHtmlAdvanced(html, url)
 
       return new NextResponse(processedHtml, {
         headers: responseHeaders,
@@ -133,7 +146,7 @@ export async function GET(request: NextRequest) {
     } else if (contentType.includes("video/") || contentType.includes("audio/")) {
       // For video and audio, use the streaming endpoint
       // Just return a redirect to our streaming endpoint
-      const streamUrl = `/api/stream?url=${encodeURIComponent(targetUrl)}`
+      const streamUrl = `/api/proxy-media-improved?url=${encodeURIComponent(targetUrl)}`
       responseHeaders.set("Location", streamUrl)
       return new NextResponse(null, {
         status: 302,
@@ -149,7 +162,7 @@ export async function GET(request: NextRequest) {
 
       // If it's JavaScript, we need to process it to proxy API calls
       if (contentType.includes("javascript")) {
-        const processedJs = processJavaScript(content, url)
+        const processedJs = processJavaScriptAdvanced(content, url)
         return new NextResponse(processedJs, {
           headers: responseHeaders,
         })
@@ -188,34 +201,46 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Helper function to process HTML content
-function processHtml(html: string, baseUrl: URL): string {
-  // Replace relative URLs with absolute ones
+// Advanced HTML processing using cheerio
+function processHtmlAdvanced(html: string, baseUrl: URL): string {
+  const $ = cheerio.load(html)
   const baseUrlString = baseUrl.origin
   const baseUrlPath = baseUrl.href.substring(0, baseUrl.href.lastIndexOf("/") + 1)
 
-  // Replace relative URLs in src and href attributes
-  let processedHtml = html
-    .replace(/src="\/([^"]*)"/g, `src="${baseUrlString}/$1"`)
-    .replace(/href="\/([^"]*)"/g, `href="${baseUrlString}/$1"`)
-    .replace(/src='\/([^']*)'/g, `src='${baseUrlString}/$1'`)
-    .replace(/href='\/([^']*)'/g, `href='${baseUrlString}/$1'`)
-    .replace(/src="(?!http|\/\/)([^"]*)"/g, `src="${baseUrlPath}$1"`)
-    .replace(/href="(?!http|\/\/)([^"]*)"/g, `href="${baseUrlPath}$1"`)
-    .replace(/src='(?!http|\/\/)([^']*)'/g, `src='${baseUrlPath}$1'`)
-    .replace(/href='(?!http|\/\/)([^']*)'/g, `href='${baseUrlPath}$1'`)
-    .replace(/content="\/([^"]*)"/g, `content="${baseUrlString}/$1"`)
-    .replace(/content='\/([^']*)'/g, `content='${baseUrlString}/$1'`)
-    .replace(/action="\/([^"]*)"/g, `action="${baseUrlString}/$1"`)
-    .replace(/action='\/([^']*)'/g, `action='${baseUrlString}/$1'`)
-    .replace(/data-src="\/([^"]*)"/g, `data-src="${baseUrlString}/$1"`)
-    .replace(/data-src='\/([^']*)'/g, `data-src='${baseUrlString}/$1'`)
+  // Add base tag if not present
+  if ($("base").length === 0) {
+    $("head").prepend(`<base href="${baseUrlString}/">`)
+  }
 
-    // Fix srcset attributes
-    .replace(/srcset="([^"]*)"/g, (match, srcset) => {
+  // Fix all relative URLs
+  $("[src]").each((_, elem) => {
+    const src = $(elem).attr("src")
+    if (src && !src.startsWith("data:") && !src.startsWith("blob:")) {
+      if (src.startsWith("/")) {
+        $(elem).attr("src", `${baseUrlString}${src}`)
+      } else if (!src.startsWith("http://") && !src.startsWith("https://") && !src.startsWith("//")) {
+        $(elem).attr("src", `${baseUrlPath}${src}`)
+      }
+    }
+  })
+
+  $("[href]").each((_, elem) => {
+    const href = $(elem).attr("href")
+    if (href && !href.startsWith("#") && !href.startsWith("javascript:") && !href.startsWith("data:")) {
+      if (href.startsWith("/")) {
+        $(elem).attr("href", `${baseUrlString}${href}`)
+      } else if (!href.startsWith("http://") && !href.startsWith("https://") && !href.startsWith("//")) {
+        $(elem).attr("href", `${baseUrlPath}${href}`)
+      }
+    }
+  })
+
+  $("[srcset]").each((_, elem) => {
+    const srcset = $(elem).attr("srcset")
+    if (srcset) {
       const newSrcset = srcset
         .split(",")
-        .map((src: string) => {
+        .map((src) => {
           const [url, descriptor] = src.trim().split(/\s+/)
           if (url.startsWith("http") || url.startsWith("//")) {
             return `${url} ${descriptor || ""}`
@@ -226,19 +251,63 @@ function processHtml(html: string, baseUrl: URL): string {
           }
         })
         .join(", ")
-      return `srcset="${newSrcset}"`
-    })
+      $(elem).attr("srcset", newSrcset)
+    }
+  })
 
-    // Fix inline styles with url()
-    .replace(/url$$['"]?(?!http|\/\/)([^'")]+)['"]?$$/g, `url('${baseUrlPath}$1')`)
-    .replace(/url$$['"]?\/([^'")]+)['"]?$$/g, `url('${baseUrlString}/$1')`)
+  // Fix form actions
+  $("form[action]").each((_, elem) => {
+    const action = $(elem).attr("action")
+    if (action) {
+      if (action.startsWith("/")) {
+        $(elem).attr("action", `${baseUrlString}${action}`)
+      } else if (!action.startsWith("http://") && !action.startsWith("https://") && !action.startsWith("//")) {
+        $(elem).attr("action", `${baseUrlPath}${action}`)
+      }
+    }
+  })
 
-  // Add base tag to head if not present
-  if (!processedHtml.includes("<base")) {
-    processedHtml = processedHtml.replace(/<head>/i, `<head><base href="${baseUrlString}/">`)
-  }
+  // Fix meta refresh URLs
+  $('meta[http-equiv="refresh"]').each((_, elem) => {
+    const content = $(elem).attr("content")
+    if (content) {
+      const match = content.match(/url=(.+)$/i)
+      if (match && match[1]) {
+        let url = match[1]
+        if (url.startsWith("/")) {
+          url = `${baseUrlString}${url}`
+        } else if (!url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("//")) {
+          url = `${baseUrlPath}${url}`
+        }
+        const delay = content.split(";")[0]
+        $(elem).attr("content", `${delay}; url=${url}`)
+      }
+    }
+  })
 
-  // Inject our proxy script to handle dynamic content
+  // Fix inline styles with url()
+  $("[style]").each((_, elem) => {
+    const style = $(elem).attr("style")
+    if (style && style.includes("url(")) {
+      const newStyle = style
+        .replace(/url$$['"]?(?!http|\/\/)([^'")]+)['"]?$$/g, `url('${baseUrlPath}$1')`)
+        .replace(/url$$['"]?\/([^'")]+)['"]?$$/g, `url('${baseUrlString}/$1')`)
+      $(elem).attr("style", newStyle)
+    }
+  })
+
+  // Fix style tags
+  $("style").each((_, elem) => {
+    const css = $(elem).html()
+    if (css) {
+      const newCss = css
+        .replace(/url$$['"]?(?!http|\/\/)([^'")]+)['"]?$$/g, `url('${baseUrlPath}$1')`)
+        .replace(/url$$['"]?\/([^'")]+)['"]?$$/g, `url('${baseUrlString}/$1')`)
+      $(elem).html(newCss)
+    }
+  })
+
+  // Inject our proxy script
   const proxyScript = `
     <script>
       // Store the original window.open
@@ -304,14 +373,14 @@ function processHtml(html: string, baseUrl: URL): string {
           // Only proxy external URLs
           if (urlObj.origin !== window.location.origin && !urlString.startsWith('/api/') && !urlString.startsWith('data:')) {
             // Determine which proxy endpoint to use based on the content type
-            let proxyUrl = '/api/proxy?url=' + encodeURIComponent(urlObj.href);
+            let proxyUrl = '/api/advanced-proxy?url=' + encodeURIComponent(urlObj.href);
             
             // For media content, use the streaming endpoint
             const mediaExtensions = ['.mp4', '.webm', '.mp3', '.ogg', '.m4a', '.wav', '.avi', '.mov', '.flv'];
             const isMedia = mediaExtensions.some(ext => urlString.toLowerCase().includes(ext));
             
             if (isMedia) {
-              proxyUrl = '/api/stream?url=' + encodeURIComponent(urlObj.href);
+              proxyUrl = '/api/proxy-media-improved?url=' + encodeURIComponent(urlObj.href);
             }
             
             // Create new options with improved headers
@@ -370,7 +439,17 @@ function processHtml(html: string, baseUrl: URL): string {
             
             const urlObj = new URL(url, window.location.href);
             if (urlObj.origin !== window.location.origin && !url.startsWith('/api/') && !url.startsWith('data:')) {
-              const proxyUrl = '/api/proxy?url=' + encodeURIComponent(urlObj.href);
+              // Determine which proxy endpoint to use
+              let proxyUrl = '/api/advanced-proxy?url=' + encodeURIComponent(urlObj.href);
+              
+              // For media content, use the streaming endpoint
+              const mediaExtensions = ['.mp4', '.webm', '.mp3', '.ogg', '.m4a', '.wav', '.avi', '.mov', '.flv'];
+              const isMedia = mediaExtensions.some(ext => url.toLowerCase().includes(ext));
+              
+              if (isMedia) {
+                proxyUrl = '/api/proxy-media-improved?url=' + encodeURIComponent(urlObj.href);
+              }
+              
               return originalXhrOpen.call(this, method, proxyUrl, ...rest);
             }
           }
@@ -503,13 +582,13 @@ function processHtml(html: string, baseUrl: URL): string {
           const sources = media.querySelectorAll('source');
           sources.forEach(source => {
             if (source.src && !source.src.startsWith('/api/')) {
-              source.setAttribute('src', '/api/stream?url=' + encodeURIComponent(source.src));
+              source.setAttribute('src', '/api/proxy-media-improved?url=' + encodeURIComponent(source.src));
             }
           });
           
           // Fix direct src attribute
           if (media.src && !media.src.startsWith('/api/')) {
-            media.setAttribute('src', '/api/stream?url=' + encodeURIComponent(media.src));
+            media.setAttribute('src', '/api/proxy-media-improved?url=' + encodeURIComponent(media.src));
           }
           
           // Force reload the media element
@@ -570,7 +649,7 @@ function processHtml(html: string, baseUrl: URL): string {
                 media.muted = event.data.value;
               });
               break;
-
+              
             case 'CLEAR_BROWSING_DATA':
               // Clear localStorage
               try {
@@ -636,7 +715,7 @@ function processHtml(html: string, baseUrl: URL): string {
                   
                   // Fix src attribute
                   if (media.src && !media.src.startsWith('/api/')) {
-                    media.setAttribute('src', '/api/stream?url=' + encodeURIComponent(media.src));
+                    media.setAttribute('src', '/api/proxy-media-improved?url=' + encodeURIComponent(media.src));
                     media.load();
                   }
                 }
@@ -645,7 +724,7 @@ function processHtml(html: string, baseUrl: URL): string {
                 if (node.nodeName === 'IFRAME') {
                   const iframe = node;
                   if (iframe.src && !iframe.src.startsWith('/api/') && !iframe.src.startsWith('data:') && !iframe.src.startsWith('about:')) {
-                    iframe.setAttribute('src', '/api/proxy?url=' + encodeURIComponent(iframe.src));
+                    iframe.setAttribute('src', '/api/advanced-proxy?url=' + encodeURIComponent(iframe.src));
                   }
                 }
               });
@@ -695,25 +774,35 @@ function processHtml(html: string, baseUrl: URL): string {
   `
 
   // Add our proxy script to the end of the body
-  if (processedHtml.includes("</body>")) {
-    processedHtml = processedHtml.replace("</body>", `${proxyScript}</body>`)
+  if ($("body").length > 0) {
+    $("body").append(proxyScript)
   } else {
-    processedHtml += proxyScript
+    $("html").append(`<body>${proxyScript}</body>`)
   }
 
-  return processedHtml
+  return $.html()
 }
 
-// Helper function to process JavaScript
-function processJavaScript(js: string, baseUrl: URL): string {
+// Advanced JavaScript processing
+function processJavaScriptAdvanced(js: string, baseUrl: URL): string {
+  const baseUrlString = baseUrl.origin
+  const baseUrlPath = baseUrl.href.substring(0, baseUrl.href.lastIndexOf("/") + 1)
+
   // Replace URLs in fetch calls
   const processedJs = js
-    // Replace fetch("http://example.com/api") with fetch("/api/proxy?url=http://example.com/api")
-    .replace(/fetch\s*\(\s*(['"`])((https?:)?\/\/[^'"`]+)\1/g, "fetch($1/api/proxy?url=$2$1")
-    // Replace XHR open("GET", "http://example.com/api") with open("GET", "/api/proxy?url=http://example.com/api")
+    // Replace fetch("http://example.com/api") with fetch("/api/advanced-proxy?url=http://example.com/api")
+    .replace(/fetch\s*\(\s*(['"`])((https?:)?\/\/[^'"`]+)\1/g, "fetch($1/api/advanced-proxy?url=$2$1")
+    // Replace XHR open("GET", "http://example.com/api") with open("GET", "/api/advanced-proxy?url=http://example.com/api")
     .replace(
       /\.open\s*\(\s*(['"`])(GET|POST|PUT|DELETE|PATCH)\1\s*,\s*(['"`])((https?:)?\/\/[^'"`]+)\3/g,
-      ".open($1$2$1, $3/api/proxy?url=$4$3",
+      ".open($1$2$1, $3/api/advanced-proxy?url=$4$3",
+    )
+    // Replace relative URLs in fetch calls
+    .replace(/fetch\s*\(\s*(['"`])\/([^'"`]+)\1/g, `fetch($1${baseUrlString}/$2$1`)
+    // Replace relative URLs in XHR open calls
+    .replace(
+      /\.open\s*\(\s*(['"`])(GET|POST|PUT|DELETE|PATCH)\1\s*,\s*(['"`])\/([^'"`]+)\3/g,
+      `.open($1$2$1, $3${baseUrlString}/$4$3`,
     )
 
   return processedJs
@@ -775,7 +864,7 @@ export async function POST(request: NextRequest) {
     if (responseContentType.includes("text/html")) {
       const html = await response.text()
       const url = new URL(targetUrl)
-      const processedHtml = processHtml(html, url)
+      const processedHtml = processHtmlAdvanced(html, url)
       return new NextResponse(processedHtml, { headers: responseHeaders })
     } else if (responseContentType.includes("application/json")) {
       const json = await response.text()

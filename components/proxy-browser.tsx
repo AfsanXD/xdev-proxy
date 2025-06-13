@@ -18,6 +18,7 @@ import {
   Volume2,
   VolumeX,
   Plus,
+  Trash2,
 } from "lucide-react"
 import { toast } from "@/components/ui/use-toast"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -419,6 +420,37 @@ export function ProxyBrowser() {
       }
     }
   }, [isMuted])
+
+  // Clear cache and cookies for a fresh browsing experience
+  const clearBrowsingData = useCallback(() => {
+    if (!activeTabId) return
+
+    // Update the iframe key to force a complete reload
+    updateTab(activeTabId, {
+      iframeKey: Date.now(),
+      loading: true,
+    })
+
+    // Try to send a message to the iframe to clear its storage
+    if (iframeRef.current && iframeRef.current.contentWindow) {
+      try {
+        iframeRef.current.contentWindow.postMessage(
+          {
+            type: "PROXY_COMMAND",
+            action: "CLEAR_BROWSING_DATA",
+          },
+          "*",
+        )
+      } catch (e) {
+        console.error("Failed to send clear data command to iframe:", e)
+      }
+    }
+
+    toast({
+      title: "Browsing data cleared",
+      description: "Cache and cookies have been cleared for this tab",
+    })
+  }, [activeTabId, updateTab])
 
   // Perform a search
   const performSearch = useCallback(() => {
@@ -852,6 +884,22 @@ export function ProxyBrowser() {
             </TooltipContent>
           </Tooltip>
 
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={clearBrowsingData}
+                className="text-gray-300 hover:text-white hover:bg-gray-800"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Clear Cache & Cookies</p>
+            </TooltipContent>
+          </Tooltip>
+
           {activeTab?.url && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -1071,7 +1119,7 @@ export function ProxyBrowser() {
               <iframe
                 key={activeTab.iframeKey}
                 ref={iframeRef}
-                src={`/api/proxy?url=${encodeURIComponent(activeTab.url)}`}
+                src={`/api/advanced-proxy?url=${encodeURIComponent(activeTab.url)}`}
                 className="w-full h-full border-0 bg-white"
                 sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-modals allow-popups allow-presentation"
                 allow="accelerometer; autoplay; camera; encrypted-media; fullscreen; geolocation; gyroscope; microphone; midi; payment; picture-in-picture"

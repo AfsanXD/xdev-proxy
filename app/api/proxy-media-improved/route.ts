@@ -1,17 +1,16 @@
 import { type NextRequest, NextResponse } from "next/server"
 
+// This endpoint handles media content with improved capabilities
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const url = searchParams.get("url")
+  const type = searchParams.get("type") || "auto"
 
   if (!url) {
     return NextResponse.json({ error: "No URL provided" }, { status: 400 })
   }
 
   try {
-    // Get range header from request if present (for video streaming)
-    const rangeHeader = request.headers.get("range")
-
     // Create a comprehensive set of headers to mimic a real browser
     const headers = new Headers({
       "User-Agent":
@@ -27,11 +26,6 @@ export async function GET(request: NextRequest) {
       "Sec-Ch-Ua-Mobile": "?0",
       "Sec-Ch-Ua-Platform": '"Windows"',
     })
-
-    // Add range header if present
-    if (rangeHeader) {
-      headers.set("Range", rangeHeader)
-    }
 
     // Forward referer if it exists
     const referer = request.headers.get("referer")
@@ -50,6 +44,12 @@ export async function GET(request: NextRequest) {
     const cookies = request.headers.get("cookie")
     if (cookies) {
       headers.set("Cookie", cookies)
+    }
+
+    // Forward range header if it exists (for video streaming)
+    const rangeHeader = request.headers.get("range")
+    if (rangeHeader) {
+      headers.set("Range", rangeHeader)
     }
 
     // Fetch with timeout
@@ -73,16 +73,36 @@ export async function GET(request: NextRequest) {
     // Set CORS headers
     responseHeaders.set("Access-Control-Allow-Origin", "*")
     responseHeaders.set("Access-Control-Allow-Methods", "GET, HEAD")
-    responseHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type")
+    responseHeaders.set("Access-Control-Allow-Headers", "Range, Content-Type, Origin, Accept")
     responseHeaders.set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
 
-    // Return the response with appropriate status code
-    return new NextResponse(response.body, {
-      status: response.status,
-      headers: responseHeaders,
-    })
+    // Handle different content types based on the type parameter
+    if (type === "image" || (type === "auto" && response.headers.get("Content-Type")?.includes("image/"))) {
+      const blob = await response.blob()
+      return new NextResponse(blob, {
+        headers: responseHeaders,
+      })
+    } else if (
+      type === "video" ||
+      type === "audio" ||
+      (type === "auto" &&
+        (response.headers.get("Content-Type")?.includes("video/") ||
+          response.headers.get("Content-Type")?.includes("audio/")))
+    ) {
+      // For streaming media, return the stream directly
+      return new NextResponse(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      })
+    } else {
+      // For other content types, return as blob
+      const blob = await response.blob()
+      return new NextResponse(blob, {
+        headers: responseHeaders,
+      })
+    }
   } catch (error) {
-    console.error("Streaming error:", error)
+    console.error("Media proxy error:", error)
 
     // Check if it's an AbortError (timeout)
     if (error instanceof Error && error.name === "AbortError") {
@@ -97,7 +117,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(
       {
-        error: "Failed to stream content",
+        error: "Failed to fetch media content",
         details: error instanceof Error ? error.message : String(error),
       },
       { status: 500 },
