@@ -2,7 +2,7 @@ import { ProxyBrowser } from "@/components/proxy-browser"
 
 export default function Home() {
   return (
-    <main className="h-screen w-screen flex flex-col overflow-hidden">
+    <main className="h-screen w-screen flex flex-col overflow-hidden bg-black">
       <ProxyBrowser />
     </main>
   )

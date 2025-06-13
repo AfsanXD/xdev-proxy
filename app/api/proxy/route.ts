@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     const url = new URL(targetUrl)
 
     // For security, block certain domains
-    const blockedDomains = ["localhost", "127.0.0.1", "internal.company.com"]
+    const blockedDomains = ["localhost", "127.0.0.1"]
     if (blockedDomains.includes(url.hostname)) {
       return NextResponse.json({ error: "Access to this domain is not allowed" }, { status: 403 })
     }
@@ -22,9 +22,9 @@ export async function GET(request: NextRequest) {
     // Create request headers that mimic a real browser
     const headers = new Headers({
       "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       Accept:
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
       "Accept-Language": "en-US,en;q=0.9",
       "Cache-Control": "no-cache",
       Pragma: "no-cache",
@@ -33,12 +33,28 @@ export async function GET(request: NextRequest) {
       "Sec-Fetch-Site": "none",
       "Sec-Fetch-User": "?1",
       "Upgrade-Insecure-Requests": "1",
+      "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120"',
+      "Sec-Ch-Ua-Mobile": "?0",
+      "Sec-Ch-Ua-Platform": '"Windows"',
     })
 
     // Forward any cookies from the original request
     const originalCookies = request.headers.get("cookie")
     if (originalCookies) {
       headers.set("Cookie", originalCookies)
+    }
+
+    // Forward referer if it exists
+    const referer = request.headers.get("referer")
+    if (referer) {
+      // Extract the original URL from the referer if it's a proxy request
+      const refererUrl = new URL(referer)
+      const originalReferer = refererUrl.searchParams.get("url")
+      if (originalReferer) {
+        headers.set("Referer", originalReferer)
+      } else {
+        headers.set("Referer", referer)
+      }
     }
 
     // Fetch the content from the target URL
@@ -64,7 +80,17 @@ export async function GET(request: NextRequest) {
     const responseHeaders = new Headers()
 
     // Copy important headers from the original response
-    const headersToForward = ["Content-Type", "Content-Length", "Cache-Control", "Expires", "Last-Modified", "ETag"]
+    const headersToForward = [
+      "Content-Type",
+      "Content-Length",
+      "Cache-Control",
+      "Expires",
+      "Last-Modified",
+      "ETag",
+      "Content-Disposition",
+      "Content-Range",
+      "Accept-Ranges",
+    ]
 
     headersToForward.forEach((header) => {
       const value = response.headers.get(header)
@@ -73,8 +99,9 @@ export async function GET(request: NextRequest) {
 
     // Set CORS headers to allow the content to be loaded in the iframe
     responseHeaders.set("Access-Control-Allow-Origin", "*")
-    responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-    responseHeaders.set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+    responseHeaders.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE, PATCH")
+    responseHeaders.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+    responseHeaders.set("Access-Control-Allow-Credentials", "true")
 
     // Handle different content types
     if (contentType.includes("text/html")) {
@@ -89,20 +116,47 @@ export async function GET(request: NextRequest) {
       })
     } else if (
       contentType.includes("image/") ||
-      contentType.includes("video/") ||
-      contentType.includes("audio/") ||
-      contentType.includes("application/pdf") ||
-      contentType.includes("application/json")
+      contentType.includes("font/") ||
+      contentType.includes("application/font") ||
+      contentType.includes("application/octet-stream") ||
+      contentType.includes("application/pdf")
     ) {
-      // For binary content like images, videos, etc., stream it directly
+      // For binary content like images, fonts, etc., stream it directly
       const blob = await response.blob()
       return new NextResponse(blob, {
         headers: responseHeaders,
       })
-    } else {
-      // For other content types, just pass through
+    } else if (contentType.includes("video/") || contentType.includes("audio/")) {
+      // For video and audio, use the streaming endpoint
+      // Just return a redirect to our streaming endpoint
+      const streamUrl = `/api/stream?url=${encodeURIComponent(targetUrl)}`
+      responseHeaders.set("Location", streamUrl)
+      return new NextResponse(null, {
+        status: 302,
+        headers: responseHeaders,
+      })
+    } else if (
+      contentType.includes("application/json") ||
+      contentType.includes("application/javascript") ||
+      contentType.includes("text/")
+    ) {
+      // For text-based content, process it
       const content = await response.text()
+
+      // If it's JavaScript, we need to process it to proxy API calls
+      if (contentType.includes("javascript")) {
+        const processedJs = processJavaScript(content, url)
+        return new NextResponse(processedJs, {
+          headers: responseHeaders,
+        })
+      }
+
       return new NextResponse(content, {
+        headers: responseHeaders,
+      })
+    } else {
+      // For other content types, stream directly
+      return new NextResponse(response.body, {
         headers: responseHeaders,
       })
     }
@@ -128,8 +182,34 @@ function processHtml(html: string, baseUrl: URL): string {
   let processedHtml = html
     .replace(/src="\/([^"]*)"/g, `src="${baseUrlString}/$1"`)
     .replace(/href="\/([^"]*)"/g, `href="${baseUrlString}/$1"`)
+    .replace(/src='\/([^']*)'/g, `src='${baseUrlString}/$1'`)
+    .replace(/href='\/([^']*)'/g, `href='${baseUrlString}/$1'`)
     .replace(/src="(?!http|\/\/)([^"]*)"/g, `src="${baseUrlPath}$1"`)
     .replace(/href="(?!http|\/\/)([^"]*)"/g, `href="${baseUrlPath}$1"`)
+    .replace(/src='(?!http|\/\/)([^']*)'/g, `src='${baseUrlPath}$1'`)
+    .replace(/href='(?!http|\/\/)([^']*)'/g, `href='${baseUrlPath}$1'`)
+
+    // Fix srcset attributes
+    .replace(/srcset="([^"]*)"/g, (match, srcset) => {
+      const newSrcset = srcset
+        .split(",")
+        .map((src: string) => {
+          const [url, descriptor] = src.trim().split(/\s+/)
+          if (url.startsWith("http") || url.startsWith("//")) {
+            return `${url} ${descriptor || ""}`
+          } else if (url.startsWith("/")) {
+            return `${baseUrlString}${url} ${descriptor || ""}`
+          } else {
+            return `${baseUrlPath}${url} ${descriptor || ""}`
+          }
+        })
+        .join(", ")
+      return `srcset="${newSrcset}"`
+    })
+
+    // Fix inline styles with url()
+    .replace(/url$$['"]?(?!http|\/\/)([^'")]+)['"]?$$/g, `url('${baseUrlPath}$1')`)
+    .replace(/url$$['"]?\/([^'")]+)['"]?$$/g, `url('${baseUrlString}/$1')`)
 
   // Add base tag to head if not present
   if (!processedHtml.includes("<base")) {
@@ -139,6 +219,40 @@ function processHtml(html: string, baseUrl: URL): string {
   // Inject our proxy script to handle dynamic content
   const proxyScript = `
     <script>
+      // Store the original window.open
+      const originalWindowOpen = window.open;
+      
+      // Override window.open to capture popups
+      window.open = function(url, name, features) {
+        if (!url) return null;
+        
+        // Resolve relative URLs
+        let absoluteUrl = url;
+        if (!url.startsWith('http') && !url.startsWith('//')) {
+          const base = document.querySelector('base');
+          const baseHref = base ? base.href : window.location.origin + '/';
+          absoluteUrl = new URL(url, baseHref).href;
+        }
+        
+        // Send message to parent to open in our proxy
+        window.parent.postMessage({
+          type: 'PROXY_EVENT',
+          action: 'OPEN_POPUP',
+          url: absoluteUrl
+        }, '*');
+        
+        // Return a mock window object
+        return {
+          closed: false,
+          close: function() { 
+            this.closed = true;
+          },
+          focus: function() {},
+          blur: function() {},
+          postMessage: function() {}
+        };
+      };
+      
       // Intercept all fetch requests to route through our proxy
       const originalFetch = window.fetch;
       window.fetch = function(url, options) {
@@ -159,23 +273,143 @@ function processHtml(html: string, baseUrl: URL): string {
       const originalXhrOpen = XMLHttpRequest.prototype.open;
       XMLHttpRequest.prototype.open = function(method, url, ...rest) {
         try {
-          const urlObj = new URL(url, window.location.href);
-          if (urlObj.origin !== window.location.origin) {
-            const proxyUrl = '/api/proxy?url=' + encodeURIComponent(urlObj.href);
-            return originalXhrOpen.call(this, method, proxyUrl, ...rest);
+          if (url && typeof url === 'string') {
+            const urlObj = new URL(url, window.location.href);
+            if (urlObj.origin !== window.location.origin) {
+              const proxyUrl = '/api/proxy?url=' + encodeURIComponent(urlObj.href);
+              return originalXhrOpen.call(this, method, proxyUrl, ...rest);
+            }
           }
         } catch (e) {
           console.error('Error in XHR proxy:', e);
         }
         return originalXhrOpen.call(this, method, url, ...rest);
       };
+      
+      // Intercept link clicks to keep navigation within the proxy
+      document.addEventListener('click', function(e) {
+        const link = e.target.closest('a');
+        if (link && link.href) {
+          const url = link.href;
+          if (!url.startsWith('javascript:') && !url.startsWith('#')) {
+            e.preventDefault();
+            window.parent.postMessage({
+              type: 'PROXY_EVENT',
+              action: 'NAVIGATE',
+              url: url
+            }, '*');
+          }
+        }
+      }, true);
+      
+      // Handle form submissions
+      document.addEventListener('submit', function(e) {
+        const form = e.target;
+        if (form.method.toLowerCase() === 'get' && form.action) {
+          e.preventDefault();
+          
+          // Build the URL with form data
+          const formData = new FormData(form);
+          const url = new URL(form.action);
+          for (const [key, value] of formData.entries()) {
+            url.searchParams.append(key, value);
+          }
+          
+          window.parent.postMessage({
+            type: 'PROXY_EVENT',
+            action: 'NAVIGATE',
+            url: url.href
+          }, '*');
+        }
+      });
+      
+      // WebRTC handling
+      if (window.RTCPeerConnection) {
+        const OrigPeerConnection = window.RTCPeerConnection;
+        window.RTCPeerConnection = function(...args) {
+          const pc = new OrigPeerConnection(...args);
+          
+          // Intercept and modify ICE servers if needed
+          if (args[0] && args[0].iceServers) {
+            console.log('WebRTC: Using custom ICE servers');
+          }
+          
+          return pc;
+        };
+        window.RTCPeerConnection.prototype = OrigPeerConnection.prototype;
+      }
+      
+      // Notify parent about page load
+      window.addEventListener('load', function() {
+        window.parent.postMessage({
+          type: 'PROXY_EVENT',
+          action: 'LOADING_STATE',
+          isLoading: false
+        }, '*');
+      });
+      
+      // Notify parent about page errors
+      window.addEventListener('error', function(e) {
+        window.parent.postMessage({
+          type: 'PROXY_EVENT',
+          action: 'ERROR',
+          message: 'Error loading resource: ' + e.target.src || e.target.href
+        }, '*');
+      }, true);
+      
+      // Fix video playback issues
+      document.addEventListener('DOMContentLoaded', function() {
+        // Find all video and audio elements and ensure they can play
+        const mediaElements = document.querySelectorAll('video, audio');
+        mediaElements.forEach(media => {
+          // Add controls if not present
+          if (!media.hasAttribute('controls')) {
+            media.setAttribute('controls', 'true');
+          }
+          
+          // Fix source elements
+          const sources = media.querySelectorAll('source');
+          sources.forEach(source => {
+            if (source.src && !source.src.startsWith('/api/')) {
+              source.setAttribute('src', '/api/stream?url=' + encodeURIComponent(source.src));
+            }
+          });
+          
+          // Fix direct src attribute
+          if (media.src && !media.src.startsWith('/api/')) {
+            media.setAttribute('src', '/api/stream?url=' + encodeURIComponent(media.src));
+          }
+          
+          // Force reload the media element
+          media.load();
+        });
+      });
     </script>
   `
 
   // Add our proxy script to the end of the body
-  processedHtml = processedHtml.replace(/<\/body>/i, `${proxyScript}</body>`)
+  if (processedHtml.includes("</body>")) {
+    processedHtml = processedHtml.replace("</body>", `${proxyScript}</body>`)
+  } else {
+    processedHtml += proxyScript
+  }
 
   return processedHtml
+}
+
+// Helper function to process JavaScript
+function processJavaScript(js: string, baseUrl: URL): string {
+  // Replace URLs in fetch calls
+  const processedJs = js
+    // Replace fetch("http://example.com/api") with fetch("/api/proxy?url=http://example.com/api")
+    .replace(/fetch\s*\(\s*(['"`])((https?:)?\/\/[^'"`]+)\1/g, "fetch($1/api/proxy?url=$2$1")
+    // Replace XHR open("GET", "http://example.com/api") with open("GET", "/api/proxy?url=http://example.com/api")
+    .replace(
+      /\.open\s*\(\s*(['"`])(GET|POST|PUT|DELETE|PATCH)\1\s*,\s*(['"`])((https?:)?\/\/[^'"`]+)\3/g,
+      ".open($1$2$1, $3/api/proxy?url=$4$3",
+    )
+
+  return processedJs
 }
 
 // Handle POST requests for form submissions
@@ -190,25 +424,25 @@ export async function POST(request: NextRequest) {
   try {
     // Get the request body
     const contentType = request.headers.get("Content-Type") || ""
-    let body: any
 
-    if (contentType.includes("application/json")) {
-      body = await request.json()
-    } else if (contentType.includes("application/x-www-form-urlencoded")) {
-      body = await request.formData()
-    } else {
-      body = await request.text()
+    // Create headers for the forwarded request
+    const headers = new Headers({
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Content-Type": contentType,
+    })
+
+    // Forward cookies
+    const cookies = request.headers.get("cookie")
+    if (cookies) {
+      headers.set("Cookie", cookies)
     }
 
     // Forward the POST request to the target URL
     const response = await fetch(targetUrl, {
       method: "POST",
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Content-Type": contentType,
-      },
-      body,
+      headers,
+      body: request.body,
       redirect: "follow",
     })
 
@@ -216,8 +450,16 @@ export async function POST(request: NextRequest) {
     const responseContentType = response.headers.get("Content-Type") || ""
     const responseHeaders = new Headers()
 
-    responseHeaders.set("Content-Type", responseContentType)
+    // Copy important headers
+    const headersToForward = ["Content-Type", "Content-Length", "Cache-Control", "Set-Cookie"]
+
+    headersToForward.forEach((header) => {
+      const value = response.headers.get(header)
+      if (value) responseHeaders.set(header, value)
+    })
+
     responseHeaders.set("Access-Control-Allow-Origin", "*")
+    responseHeaders.set("Access-Control-Allow-Credentials", "true")
 
     if (responseContentType.includes("text/html")) {
       const html = await response.text()
@@ -238,8 +480,9 @@ export async function POST(request: NextRequest) {
 export async function OPTIONS() {
   const headers = new Headers({
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE, PATCH",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
+    "Access-Control-Allow-Credentials": "true",
     "Access-Control-Max-Age": "86400",
   })
 
