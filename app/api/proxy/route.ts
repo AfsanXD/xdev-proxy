@@ -57,11 +57,15 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Fetch the content from the target URL
+    // Fetch the content from the target URL with a timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
+
     const response = await fetch(targetUrl, {
       headers,
       redirect: "follow",
-    })
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeoutId))
 
     // Check if the response is successful
     if (!response.ok) {
@@ -162,6 +166,18 @@ export async function GET(request: NextRequest) {
     }
   } catch (error) {
     console.error("Proxy error:", error)
+
+    // Check if it's an AbortError (timeout)
+    if (error instanceof Error && error.name === "AbortError") {
+      return NextResponse.json(
+        {
+          error: "Request timed out",
+          details: "The request took too long to complete",
+        },
+        { status: 504 },
+      )
+    }
+
     return NextResponse.json(
       {
         error: "Failed to fetch the requested URL",
@@ -238,7 +254,8 @@ function processHtml(html: string, baseUrl: URL): string {
         window.parent.postMessage({
           type: 'PROXY_EVENT',
           action: 'OPEN_POPUP',
-          url: absoluteUrl
+          url: absoluteUrl,
+          title: document.title
         }, '*');
         
         // Return a mock window object
@@ -257,11 +274,34 @@ function processHtml(html: string, baseUrl: URL): string {
       const originalFetch = window.fetch;
       window.fetch = function(url, options) {
         try {
-          const urlObj = new URL(url, window.location.href);
+          if (!url) return originalFetch(url, options);
+          
+          let urlObj;
+          if (typeof url === 'string') {
+            // Handle relative URLs
+            if (!url.startsWith('http') && !url.startsWith('/api/') && !url.startsWith('data:')) {
+              const base = document.querySelector('base');
+              const baseHref = base ? base.href : window.location.origin + '/';
+              url = new URL(url, baseHref).href;
+            }
+            urlObj = new URL(url, window.location.href);
+          } else if (url instanceof Request) {
+            urlObj = new URL(url.url, window.location.href);
+          } else {
+            return originalFetch(url, options);
+          }
+          
           // Only proxy external URLs
-          if (urlObj.origin !== window.location.origin) {
+          if (urlObj.origin !== window.location.origin && !url.startsWith('/api/') && !url.startsWith('data:')) {
             const proxyUrl = '/api/proxy?url=' + encodeURIComponent(urlObj.href);
-            return originalFetch(proxyUrl, options);
+            
+            if (url instanceof Request) {
+              // Create a new Request with the proxied URL
+              const newRequest = new Request(proxyUrl, url);
+              return originalFetch(newRequest, options);
+            } else {
+              return originalFetch(proxyUrl, options);
+            }
           }
         } catch (e) {
           console.error('Error in fetch proxy:', e);
@@ -274,8 +314,15 @@ function processHtml(html: string, baseUrl: URL): string {
       XMLHttpRequest.prototype.open = function(method, url, ...rest) {
         try {
           if (url && typeof url === 'string') {
+            // Handle relative URLs
+            if (!url.startsWith('http') && !url.startsWith('/api/') && !url.startsWith('data:')) {
+              const base = document.querySelector('base');
+              const baseHref = base ? base.href : window.location.origin + '/';
+              url = new URL(url, baseHref).href;
+            }
+            
             const urlObj = new URL(url, window.location.href);
-            if (urlObj.origin !== window.location.origin) {
+            if (urlObj.origin !== window.location.origin && !url.startsWith('/api/') && !url.startsWith('data:')) {
               const proxyUrl = '/api/proxy?url=' + encodeURIComponent(urlObj.href);
               return originalXhrOpen.call(this, method, proxyUrl, ...rest);
             }
@@ -291,7 +338,7 @@ function processHtml(html: string, baseUrl: URL): string {
         const link = e.target.closest('a');
         if (link && link.href) {
           const url = link.href;
-          if (!url.startsWith('javascript:') && !url.startsWith('#')) {
+          if (!url.startsWith('javascript:') && !url.startsWith('#') && !url.startsWith('data:')) {
             e.preventDefault();
             window.parent.postMessage({
               type: 'PROXY_EVENT',
@@ -346,145 +393,47 @@ function processHtml(html: string, baseUrl: URL): string {
           action: 'LOADING_STATE',
           isLoading: false
         }, '*');
+        
+        // Send page title to parent
+        window.parent.postMessage({
+          type: 'PROXY_EVENT',
+          action: 'PAGE_TITLE',
+          title: document.title
+        }, '*');
+        
+        // Try to find favicon
+        const sendFavicon = () => {
+          let faviconUrl = '';
+          
+          // Check for link rel="icon" or rel="shortcut icon"
+          const iconLink = document.querySelector('link[rel="icon"], link[rel="shortcut icon"]');
+          if (iconLink && iconLink.href) {
+            faviconUrl = iconLink.href;
+          }
+          
+          // If no icon found, try the default /favicon.ico
+          if (!faviconUrl) {
+            const base = document.querySelector('base');
+            const baseHref = base ? base.href : window.location.origin + '/';
+            faviconUrl = new URL('/favicon.ico', baseHref).href;
+          }
+          
+          if (faviconUrl) {
+            window.parent.postMessage({
+              type: 'PROXY_EVENT',
+              action: 'FAVICON',
+              favicon: faviconUrl
+            }, '*');
+          }
+        };
+        
+        // Send favicon info
+        setTimeout(sendFavicon, 100);
       });
       
       // Notify parent about page errors
       window.addEventListener('error', function(e) {
-        window.parent.postMessage({
-          type: 'PROXY_EVENT',
-          action: 'ERROR',
-          message: 'Error loading resource: ' + e.target.src || e.target.href
-        }, '*');
-      }, true);
-      
-      // Fix video playback issues
-      document.addEventListener('DOMContentLoaded', function() {
-        // Find all video and audio elements and ensure they can play
-        const mediaElements = document.querySelectorAll('video, audio');
-        mediaElements.forEach(media => {
-          // Add controls if not present
-          if (!media.hasAttribute('controls')) {
-            media.setAttribute('controls', 'true');
-          }
-          
-          // Fix source elements
-          const sources = media.querySelectorAll('source');
-          sources.forEach(source => {
-            if (source.src && !source.src.startsWith('/api/')) {
-              source.setAttribute('src', '/api/stream?url=' + encodeURIComponent(source.src));
-            }
-          });
-          
-          // Fix direct src attribute
-          if (media.src && !media.src.startsWith('/api/')) {
-            media.setAttribute('src', '/api/stream?url=' + encodeURIComponent(media.src));
-          }
-          
-          // Force reload the media element
-          media.load();
-        });
-      });
-    </script>
-  `
-
-  // Add our proxy script to the end of the body
-  if (processedHtml.includes("</body>")) {
-    processedHtml = processedHtml.replace("</body>", `${proxyScript}</body>`)
-  } else {
-    processedHtml += proxyScript
-  }
-
-  return processedHtml
-}
-
-// Helper function to process JavaScript
-function processJavaScript(js: string, baseUrl: URL): string {
-  // Replace URLs in fetch calls
-  const processedJs = js
-    // Replace fetch("http://example.com/api") with fetch("/api/proxy?url=http://example.com/api")
-    .replace(/fetch\s*\(\s*(['"`])((https?:)?\/\/[^'"`]+)\1/g, "fetch($1/api/proxy?url=$2$1")
-    // Replace XHR open("GET", "http://example.com/api") with open("GET", "/api/proxy?url=http://example.com/api")
-    .replace(
-      /\.open\s*\(\s*(['"`])(GET|POST|PUT|DELETE|PATCH)\1\s*,\s*(['"`])((https?:)?\/\/[^'"`]+)\3/g,
-      ".open($1$2$1, $3/api/proxy?url=$4$3",
-    )
-
-  return processedJs
-}
-
-// Handle POST requests for form submissions
-export async function POST(request: NextRequest) {
-  const { searchParams } = new URL(request.url)
-  const targetUrl = searchParams.get("url")
-
-  if (!targetUrl) {
-    return NextResponse.json({ error: "No URL provided" }, { status: 400 })
-  }
-
-  try {
-    // Get the request body
-    const contentType = request.headers.get("Content-Type") || ""
-
-    // Create headers for the forwarded request
-    const headers = new Headers({
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "Content-Type": contentType,
-    })
-
-    // Forward cookies
-    const cookies = request.headers.get("cookie")
-    if (cookies) {
-      headers.set("Cookie", cookies)
-    }
-
-    // Forward the POST request to the target URL
-    const response = await fetch(targetUrl, {
-      method: "POST",
-      headers,
-      body: request.body,
-      redirect: "follow",
-    })
-
-    // Process the response similar to GET
-    const responseContentType = response.headers.get("Content-Type") || ""
-    const responseHeaders = new Headers()
-
-    // Copy important headers
-    const headersToForward = ["Content-Type", "Content-Length", "Cache-Control", "Set-Cookie"]
-
-    headersToForward.forEach((header) => {
-      const value = response.headers.get(header)
-      if (value) responseHeaders.set(header, value)
-    })
-
-    responseHeaders.set("Access-Control-Allow-Origin", "*")
-    responseHeaders.set("Access-Control-Allow-Credentials", "true")
-
-    if (responseContentType.includes("text/html")) {
-      const html = await response.text()
-      const url = new URL(targetUrl)
-      const processedHtml = processHtml(html, url)
-      return new NextResponse(processedHtml, { headers: responseHeaders })
-    } else {
-      const content = await response.text()
-      return new NextResponse(content, { headers: responseHeaders })
-    }
-  } catch (error) {
-    console.error("Proxy error:", error)
-    return NextResponse.json({ error: "Failed to process the request" }, { status: 500 })
-  }
-}
-
-// Handle OPTIONS requests for CORS preflight
-export async function OPTIONS() {
-  const headers = new Headers({
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE, PATCH",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
-    "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Max-Age": "86400",
-  })
-
-  return new NextResponse(null, { headers })
-}
+        if (e.target.tagName === 'IMG' || e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK') {
+          window.parent.postMessage({
+            type: 'PROXY_EVENT',
+            action: 'ERROR
