@@ -13,6 +13,7 @@ import {
   X,
   BookmarkIcon,
   HistoryIcon,
+  Search,
   Shield,
   Volume2,
   VolumeX,
@@ -130,7 +131,7 @@ export function ProxyBrowser() {
       setIsSearching(
         activeTab.url.includes("google.com/search") ||
           activeTab.url.includes("bing.com/search") ||
-          activeTab.url.includes("duckduckgo.com")
+          activeTab.url.includes("duckduckgo.com"),
       )
     } else {
       setUrl("")
@@ -949,5 +950,358 @@ export function ProxyBrowser() {
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                <p>{isCurrentUrlBookmarked ? "Remove bookmark (Ctrl+D)" : "Add bookmark (Ctrl+D)"}</p>\
+                <p>{isCurrentUrlBookmarked ? "Remove bookmark (Ctrl+D)" : "Add bookmark (Ctrl+D)"}</p>
               </TooltipContent>
+            </Tooltip>
+          )}
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={debugMode ? "default" : "ghost"}
+                size="icon"
+                onClick={toggleDebugMode}
+                className={`text-gray-300 hover:text-white hover:bg-gray-800 ${debugMode ? "bg-gray-700" : ""}`}
+              >
+                <span className="text-xs font-mono">DBG</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Toggle Debug Mode (Alt+D)</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
+
+      {/* Search bar */}
+      {isSearching && (
+        <div className="flex items-center bg-gray-800 p-2 border-b border-gray-700">
+          <Search className="h-4 w-4 text-gray-400 mr-2 ml-2" />
+          <Input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search with Google"
+            className="flex-1 border-0 focus-visible:ring-0 focus-visible:ring-offset-0 bg-gray-800 text-white h-8"
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                performSearch()
+              }
+            }}
+          />
+          <Button onClick={performSearch} className="ml-2 bg-gray-700 hover:bg-gray-600 text-white h-8">
+            Search
+          </Button>
+        </div>
+      )}
+
+      {/* Bookmarks panel */}
+      {showBookmarks && (
+        <div className="bg-gray-800 border-b border-gray-700 max-h-64 overflow-y-auto">
+          <div className="p-2 border-b border-gray-700 flex justify-between items-center">
+            <h3 className="font-medium">Bookmarks</h3>
+            <Button variant="ghost" size="sm" onClick={() => setShowBookmarks(false)} className="h-6 w-6 p-0">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          {bookmarks.length === 0 ? (
+            <div className="p-4 text-center text-gray-400">
+              No bookmarks yet. Add some by clicking the bookmark icon.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-1 p-2">
+              {bookmarks.map((bookmark, index) => (
+                <div
+                  key={index}
+                  className="flex items-center p-2 hover:bg-gray-700 rounded cursor-pointer"
+                  onClick={() => {
+                    navigate(bookmark.url)
+                    setShowBookmarks(false)
+                  }}
+                >
+                  {bookmark.favicon ? (
+                    <img src={bookmark.favicon || "/placeholder.svg"} alt="" className="w-6 h-6 mr-2" />
+                  ) : (
+                    <div className="w-6 h-6 bg-gray-700 rounded flex items-center justify-center mr-2">
+                      {bookmark.title.charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <div className="flex-1 truncate">
+                    <div className="text-sm font-medium truncate">{bookmark.title}</div>
+                    <div className="text-xs text-gray-400 truncate">{bookmark.url}</div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 w-6 p-0 ml-2"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setBookmarks(bookmarks.filter((_, i) => i !== index))
+                    }}
+                  >
+                    <X className="h-3 w-3" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* History panel */}
+      {showHistory && (
+        <div className="bg-gray-800 border-b border-gray-700 max-h-64 overflow-y-auto">
+          <div className="p-2 border-b border-gray-700 flex justify-between items-center">
+            <h3 className="font-medium">History</h3>
+            <div className="flex items-center">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs text-gray-400 hover:text-white mr-2"
+                onClick={() => {
+                  if (confirm("Clear all browsing history?")) {
+                    // Clear history from all tabs
+                    setTabs((prevTabs) =>
+                      prevTabs.map((tab) => ({
+                        ...tab,
+                        history: [],
+                        historyIndex: -1,
+                      })),
+                    )
+                  }
+                }}
+              >
+                Clear All
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setShowHistory(false)} className="h-6 w-6 p-0">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          {!activeTab || activeTab.history.length === 0 ? (
+            <div className="p-4 text-center text-gray-400">No browsing history yet.</div>
+          ) : (
+            <div className="grid grid-cols-1 gap-1 p-2">
+              {[...activeTab.history].reverse().map((entry, index) => (
+                <div
+                  key={index}
+                  className="flex items-center p-2 hover:bg-gray-700 rounded cursor-pointer"
+                  onClick={() => {
+                    navigate(entry.url)
+                    setShowHistory(false)
+                  }}
+                >
+                  <div className="w-6 h-6 bg-gray-700 rounded flex items-center justify-center mr-2">
+                    <HistoryIcon className="h-3 w-3" />
+                  </div>
+                  <div className="flex-1 truncate">
+                    <div className="text-sm font-medium truncate">{entry.title}</div>
+                    <div className="text-xs text-gray-400 truncate">{entry.url}</div>
+                    <div className="text-xs text-gray-500">{new Date(entry.timestamp).toLocaleString()}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Popup tabs */}
+      {popups.length > 0 && (
+        <div className="flex bg-gray-900 border-b border-gray-700 overflow-x-auto">
+          <Button
+            variant={activePopupId === null ? "default" : "ghost"}
+            className={`px-3 py-1 rounded-none ${activePopupId === null ? "bg-gray-700" : "bg-gray-900 text-gray-300"}`}
+            onClick={() => setActivePopupId(null)}
+          >
+            {activeTab?.title || (activeTab?.url ? new URL(activeTab.url).hostname : "Main")}
+          </Button>
+          {popups.map((popup) => (
+            <div key={popup.id} className="flex items-center">
+              <Button
+                variant={activePopupId === popup.id ? "default" : "ghost"}
+                className={`px-3 py-1 rounded-none ${
+                  activePopupId === popup.id ? "bg-gray-700" : "bg-gray-900 text-gray-300"
+                }`}
+                onClick={() => setActivePopupId(popup.id)}
+              >
+                {popup.title || new URL(popup.url).hostname.replace("www.", "")}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="p-0 h-6 w-6 rounded-full text-gray-400 hover:text-white"
+                onClick={() => closePopup(popup.id)}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex-1 w-full bg-black relative">
+        {activeTab?.loading && (
+          <div className="absolute top-0 left-0 w-full h-1 bg-gray-800 z-50">
+            <div className="h-full bg-blue-500 animate-progress"></div>
+          </div>
+        )}
+
+        {/* Error state */}
+        {activeTab?.error && (
+          <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center bg-gray-900 z-40">
+            <div className="bg-gray-800 p-6 rounded-lg max-w-md text-center">
+              <div className="text-red-500 text-5xl mb-4">⚠️</div>
+              <h3 className="text-xl font-bold mb-2">Something went wrong</h3>
+              <p className="text-gray-300 mb-4">{activeTab.error}</p>
+              <div className="flex justify-center space-x-4">
+                <Button onClick={handleRefresh}>Try Again</Button>
+                <Button variant="outline" onClick={goHome}>
+                  Go Home
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Main content frame */}
+        {!activePopupId && (
+          <div className="w-full h-full">
+            {activeTab?.url ? (
+              <iframe
+                key={activeTab.iframeKey}
+                ref={iframeRef}
+                src={`/api/simple-proxy?url=${encodeURIComponent(activeTab.url)}`}
+                className="w-full h-full border-0 bg-white"
+                sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-modals allow-popups allow-presentation"
+                allow="accelerometer; autoplay; camera; encrypted-media; fullscreen; geolocation; gyroscope; microphone; midi; payment; picture-in-picture"
+                title="Browser content"
+                onLoad={() => {
+                  if (activeTabId) {
+                    updateTab(activeTabId, { loading: false })
+                  }
+
+                  // Try to get the page title and favicon
+                  if (iframeRef.current && iframeRef.current.contentWindow) {
+                    try {
+                      iframeRef.current.contentWindow.postMessage(
+                        {
+                          type: "PROXY_COMMAND",
+                          action: "GET_TITLE_AND_FAVICON",
+                        },
+                        "*",
+                      )
+                    } catch (e) {
+                      console.error("Failed to send get title command to iframe:", e)
+                    }
+                  }
+
+                  if (debugMode) {
+                    console.log(`Page loaded: ${activeTab.url}`)
+                  }
+                }}
+                onError={(e) => {
+                  if (activeTabId) {
+                    updateTab(activeTabId, {
+                      loading: false,
+                      error: "Failed to load the page",
+                    })
+                  }
+                  if (debugMode) {
+                    console.error("Iframe error:", e)
+                  }
+                }}
+              />
+            ) : (
+              <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-black">
+                <Globe className="h-16 w-16 text-gray-600 mb-4" />
+                <p className="text-gray-400 mb-8">Enter a URL in the address bar above to begin browsing</p>
+
+                {bookmarks.length > 0 && (
+                  <div className="w-full max-w-2xl">
+                    <h3 className="text-lg font-medium mb-4 text-gray-300">Bookmarks</h3>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      {bookmarks.slice(0, 8).map((bookmark, index) => (
+                        <div
+                          key={index}
+                          className="flex flex-col items-center p-4 bg-gray-800 rounded-lg hover:bg-gray-700 cursor-pointer"
+                          onClick={() => navigate(bookmark.url)}
+                        >
+                          {bookmark.favicon ? (
+                            <img
+                              src={bookmark.favicon || "/placeholder.svg"}
+                              alt=""
+                              className="w-12 h-12 rounded-full mb-2"
+                            />
+                          ) : (
+                            <div className="w-12 h-12 bg-gray-700 rounded-full flex items-center justify-center mb-2">
+                              {bookmark.title.charAt(0).toUpperCase()}
+                            </div>
+                          )}
+                          <div className="text-sm font-medium text-center truncate w-full">{bookmark.title}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-8 p-4 bg-gray-800 rounded-lg max-w-md">
+                  <h3 className="text-lg font-medium mb-2 text-gray-300">Search the Web</h3>
+                  <div className="flex">
+                    <Input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search with Google"
+                      className="flex-1 bg-gray-700 border-gray-600 text-white"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          performSearch()
+                        }
+                      }}
+                    />
+                    <Button onClick={performSearch} className="ml-2">
+                      Search
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Popup frames */}
+        {popups.map((popup) => (
+          <div key={popup.id} className={`w-full h-full ${activePopupId === popup.id ? "block" : "hidden"}`}>
+            <iframe
+              src={`/api/simple-proxy?url=${encodeURIComponent(popup.url)}`}
+              className="w-full h-full border-0 bg-white"
+              sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-modals allow-popups allow-presentation"
+              allow="accelerometer; autoplay; camera; encrypted-media; fullscreen; geolocation; gyroscope; microphone; midi; payment; picture-in-picture"
+              title={`Popup content ${popup.id}`}
+              onLoad={() => {
+                // Try to get the popup title
+                const iframe = document.querySelector(`iframe[title="Popup content ${popup.id}"]`) as HTMLIFrameElement
+                if (iframe && iframe.contentWindow) {
+                  try {
+                    iframe.contentWindow.postMessage(
+                      {
+                        type: "PROXY_COMMAND",
+                        action: "GET_TITLE",
+                        popupId: popup.id,
+                      },
+                      "*",
+                    )
+                  } catch (e) {
+                    console.error("Failed to send get title command to popup iframe:", e)
+                  }
+                }
+              }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
